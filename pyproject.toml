@@ -5,6 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agent-collab"
 version = "0.1.0"
+license = {text = "MIT"}
 description = "Authenticated file-based messaging for interactive coding-agent sessions"
 readme = "README.md"
 requires-python = ">=3.11"
