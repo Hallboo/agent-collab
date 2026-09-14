@@ -79,8 +79,10 @@ def test_two_services_deliver_once(settings) -> None:
     receiver.start()
     try:
         result = sender.send("receiver", "hello")
+        assert result["status"] == "delivered"
+        assert result["preview"] == "hello"
         assert result["notice"] == (
-            f"[Agent Collab] → receiver@test-host queued {result['msg_id'][:8]}"
+            f"[Agent Collab] → receiver@test-host delivered {result['msg_id'][:8]} ·hello"
         )
         deadline = time.monotonic() + 3
         while not receiver_delivery.messages and time.monotonic() < deadline:
@@ -126,10 +128,12 @@ def test_transient_delivery_failure_is_retried(settings, monkeypatch) -> None:
         sender.stop()
 
 
-def test_sender_receives_final_status_notice(settings) -> None:
-    fast_settings = replace(settings, poll_seconds=0.01, heartbeat_seconds=0.05)
+def test_sender_receives_final_status_notice(settings, monkeypatch) -> None:
+    monkeypatch.setattr("agent_collab.service.DELIVERY_RETRY_SECONDS", 0.1)
+    fast_settings = replace(
+        settings, poll_seconds=0.01, heartbeat_seconds=0.05, send_wait_seconds=0.02
+    )
     sender_delivery = RecordingDelivery()
-    receiver_delivery = RecordingDelivery()
     sender = CollaborationService(
         fast_settings,
         identity("sender", "session-a"),
@@ -138,12 +142,13 @@ def test_sender_receives_final_status_notice(settings) -> None:
     receiver = CollaborationService(
         fast_settings,
         identity("receiver", "session-b"),
-        receiver_delivery,
+        FlakyDelivery(),
     )
     sender.start()
     receiver.start()
     try:
         result = sender.send("receiver", "hello")
+        assert result["status"] == "pending"
         deadline = time.monotonic() + 3
         notices = []
         while time.monotonic() < deadline:
@@ -152,9 +157,59 @@ def test_sender_receives_final_status_notice(settings) -> None:
                 break
             time.sleep(0.01)
         assert [m["notice"] for m in notices] == [
-            f"[Agent Collab] → receiver@test-host delivered {result['msg_id'][:8]}"
+            f"[Agent Collab] → receiver@test-host delivered {result['msg_id'][:8]} ·hello"
         ]
-        assert len(receiver_delivery.messages) == 1
+    finally:
+        receiver.stop()
+        sender.stop()
+
+
+def test_send_result_settles_without_async_notice(settings) -> None:
+    fast_settings = replace(settings, poll_seconds=0.01, heartbeat_seconds=0.05)
+    sender_delivery = RecordingDelivery()
+    sender = CollaborationService(
+        fast_settings, identity("sender", "session-a"), sender_delivery
+    )
+    receiver = CollaborationService(
+        fast_settings, identity("receiver", "session-b"), RecordingDelivery()
+    )
+    sender.start()
+    receiver.start()
+    try:
+        result = sender.send("receiver", "hello")
+        assert result["status"] == "delivered"
+        time.sleep(0.3)
+        assert [m for m in sender_delivery.messages if m.get("notice")] == []
+    finally:
+        receiver.stop()
+        sender.stop()
+
+
+def test_send_result_reports_pending_when_receiver_cannot_deliver(settings, monkeypatch) -> None:
+    monkeypatch.setattr("agent_collab.service.DELIVERY_RETRY_SECONDS", 30.0)
+
+    class DownDelivery:
+        def deliver(self, message):
+            return DeliveryResult(False, "receiver client is down")
+
+    fast_settings = replace(
+        settings, poll_seconds=0.01, heartbeat_seconds=0.05, send_wait_seconds=0.05
+    )
+    sender = CollaborationService(
+        fast_settings, identity("sender", "session-a"), RecordingDelivery()
+    )
+    receiver = CollaborationService(
+        fast_settings, identity("receiver", "session-b"), DownDelivery()
+    )
+    sender.start()
+    receiver.start()
+    try:
+        result = sender.send("receiver", "hello")
+        assert result["status"] == "pending"
+        assert result["notice"].startswith(
+            f"[Agent Collab] → receiver@test-host pending {result['msg_id'][:8]}"
+        )
+        assert result["preview"] == "hello"
     finally:
         receiver.stop()
         sender.stop()
@@ -315,8 +370,9 @@ def test_room_flow_create_join_send_leave(settings) -> None:
 
         result = a.send(f"#{room_id}", "hello room")
         assert result["to"] == f"#{room_id}"
+        assert result["status"] == "delivered 2"
         assert result["notice"] == (
-            f"[Agent Collab] → #{room_id} (2) queued {result['msg_id'][:8]}"
+            f"[Agent Collab] → #{room_id} (2) delivered 2 {result['msg_id'][:8]} ·hello room"
         )
 
         chat_to = lambda svc: [
@@ -324,14 +380,9 @@ def test_room_flow_create_join_send_leave(settings) -> None:
         ]
         wait_for(lambda: len(chat_to(b)) == 1)
         wait_for(lambda: len(chat_to(c)) == 1)
-
-        final = lambda: [
-            m["notice"]
-            for m in svc_delivery_messages(a)
-            if m.get("notice") and m["notice"].startswith(f"[Agent Collab] → #{room_id} delivered")
-        ]
-        wait_for(lambda: len(final()) == 1)
-        assert final()[0] == f"[Agent Collab] → #{room_id} delivered 2 {result['msg_id'][:8]}"
+        # 已同步结算的发送不再补发异步回执
+        time.sleep(0.2)
+        assert [m for m in svc_delivery_messages(a) if m.get("notice")] == []
 
         with pytest.raises(StoreError, match="not a member"):
             d.send(f"#{room_id}", "intruder")

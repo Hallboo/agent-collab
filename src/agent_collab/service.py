@@ -23,6 +23,16 @@ LOG = logging.getLogger(__name__)
 DELIVERY_RETRY_SECONDS = 5.0
 SENT_STATUS_MAX_ATTEMPTS = 5
 NAME_COLLISION_RETRIES = 12
+PREVIEW_CHARS = 40
+
+
+def _preview(text: str) -> str:
+    """One-line, first-N-chars gist so a human can tell sends apart in tool output."""
+    return " ".join(text.split())[:PREVIEW_CHARS]
+
+
+def _send_notice(label: str, status_word: str, msg_id: str, preview: str) -> str:
+    return f"{arrow_notice('→', label, status_word, msg_id)} ·{preview}"
 
 
 class RateLimitError(RuntimeError):
@@ -151,39 +161,63 @@ class CollaborationService:
             except Exception as exc:  # noqa: BLE001 - watcher must stay alive after one bad file
                 LOG.error("inbox watcher error: %s", type(exc).__name__)
 
+    def _status_counts(self, msg_id: str, entry: dict[str, Any]) -> tuple[dict[str, int], bool]:
+        counts: dict[str, int] = {}
+        settled = True
+        for key, _addr, member_agent_id in entry["members"]:
+            status = self.store.sent_status(key, msg_id)
+            if status in ("delivered", "queued", "duplicate"):
+                word = "delivered" if status == "duplicate" else status
+                counts[word] = counts.get(word, 0) + 1
+            elif status == "rejected":
+                counts["rejected"] = counts.get("rejected", 0) + 1
+            elif entry["room"] and member_agent_id and self.store.online_member(member_agent_id) is None:
+                counts["offline"] = counts.get("offline", 0) + 1
+            else:
+                settled = False
+        return counts, settled
+
+    @staticmethod
+    def _status_word(counts: dict[str, int], total: int) -> str:
+        if total == 1 and len(counts) == 1:
+            return next(iter(counts))
+        return (
+            " ".join(
+                f"{word} {counts[word]}"
+                for word in ("delivered", "queued", "rejected", "offline")
+                if counts.get(word)
+            )
+            or "unreached"
+        )
+
+    def _wait_terminal_status(self, msg_id: str, entry: dict[str, Any]) -> str | None:
+        """Block briefly until every copy reaches a transport terminal state.
+
+        The send tool result is the moment a human treats the message as sent, so it
+        should report the real state instead of an unconditional "queued": wait up to
+        send_wait_seconds for the receiver sidecar to confirm; None still means
+        pending, and the async final-status notice keeps covering that case.
+        """
+        deadline = time.monotonic() + self.settings.send_wait_seconds
+        while True:
+            counts, settled = self._status_counts(msg_id, entry)
+            if settled:
+                return self._status_word(counts, len(entry["members"]))
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(0.05)
+
     def _check_sent_status(self) -> None:
         for msg_id, entry in list(self._sent.items()):
             members = entry["members"]
             if not members:
                 self._sent.pop(msg_id, None)
                 continue
-            counts: dict[str, int] = {}
-            settled = True
-            for key, _addr, member_agent_id in members:
-                status = self.store.sent_status(key, msg_id)
-                if status in ("delivered", "queued", "duplicate"):
-                    word = "delivered" if status == "duplicate" else status
-                    counts[word] = counts.get(word, 0) + 1
-                elif status == "rejected":
-                    counts["rejected"] = counts.get("rejected", 0) + 1
-                elif entry["room"] and member_agent_id and self.store.online_member(member_agent_id) is None:
-                    counts["offline"] = counts.get("offline", 0) + 1
-                else:
-                    settled = False
+            counts, settled = self._status_counts(msg_id, entry)
             if not settled:
                 continue
-            if len(members) == 1 and len(counts) == 1:
-                status_word = next(iter(counts))
-            else:
-                status_word = (
-                    " ".join(
-                        f"{word} {counts[word]}"
-                        for word in ("delivered", "queued", "rejected", "offline")
-                        if counts.get(word)
-                    )
-                    or "unreached"
-                )
-            notice = arrow_notice("→", str(entry["label"]), status_word, msg_id)
+            status_word = self._status_word(counts, len(members))
+            notice = _send_notice(str(entry["label"]), status_word, msg_id, str(entry.get("preview", "")))
             try:
                 result = self.delivery.deliver({"notice": notice, "msg_id": msg_id})
             except Exception as exc:  # noqa: BLE001 - status notices must not kill the watcher
@@ -285,37 +319,55 @@ class CollaborationService:
         msg_id = str(message["msg_id"])
         peer = str(message["to"])
         host = peer.split("@", 1)[1]
-        self._sent[msg_id] = {
+        preview = _preview(text)
+        entry = {
             "label": peer,
             "room": False,
             "members": [(agent_key(host, str(message["to_session"])), peer, None)],
             "attempts": 0,
+            "preview": preview,
         }
+        status_word = self._settle_or_keep_pending(msg_id, entry)
         return {
             "msg_id": msg_id,
             "to": peer,
-            "persisted": True,
-            "delivery": "receiver-sidecar-retries-until-accepted",
-            "notice": arrow_notice("→", peer, "queued", msg_id),
+            "status": status_word,
+            "preview": preview,
+            "notice": _send_notice(peer, status_word, msg_id, preview),
         }
 
     def _send_room(self, to: str, text: str, reply_to: str | None) -> dict[str, Any]:
         result = self.store.send_room(self.identity, to, text, reply_to)
         msg_id = str(result["msg_id"])
         label = f"#{result['room_id']}"
-        members = [
-            (str(recipient["key"]), str(recipient["address"]), str(recipient["agent_id"]))
-            for recipient in result["recipients"]
-        ]
-        self._sent[msg_id] = {"label": label, "room": True, "members": members, "attempts": 0}
+        preview = _preview(text)
+        entry = {
+            "label": label,
+            "room": True,
+            "members": [
+                (str(recipient["key"]), str(recipient["address"]), str(recipient["agent_id"]))
+                for recipient in result["recipients"]
+            ],
+            "attempts": 0,
+            "preview": preview,
+        }
+        status_word = self._settle_or_keep_pending(msg_id, entry)
         return {
             "msg_id": msg_id,
             "to": label,
-            "persisted": True,
-            "delivery": "room-fanout-receiver-sidecar-retries",
+            "status": status_word,
             "recipients": [str(recipient["address"]) for recipient in result["recipients"]],
-            "notice": arrow_notice("→", f"{label} ({len(members)})", "queued", msg_id),
+            "preview": preview,
+            "notice": _send_notice(f"{label} ({len(entry['members'])})", status_word, msg_id, preview),
         }
+
+    def _settle_or_keep_pending(self, msg_id: str, entry: dict[str, Any]) -> str:
+        """Wait for a terminal transport state; register for the async notice only if still pending."""
+        settled = self._wait_terminal_status(msg_id, entry)
+        if settled is not None:
+            return settled
+        self._sent[msg_id] = entry
+        return "pending"
 
     def _agent_id(self) -> str:
         return agent_id(self.identity.repo, self.identity.client, self.identity.host, self.identity.pid)

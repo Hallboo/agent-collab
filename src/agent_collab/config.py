@@ -76,6 +76,7 @@ class Settings:
     guide_path: str | None = None
     max_message_chars: int = 16_000
     send_limit_per_minute: int = 30
+    send_wait_seconds: float = 3.0
     poll_seconds: float = 1.0
     heartbeat_seconds: float = 5.0
     remote_stale_seconds: float = 30.0

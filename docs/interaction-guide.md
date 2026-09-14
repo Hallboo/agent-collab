@@ -29,7 +29,7 @@
 
 ## 消息语义(不要误读)
 
-- 通知行:`→ peer queued <id8>`(发出)→ `delivered 2 queued 1`(聚合终态);**终态不来 = 对端没收**(idle/停机)。
+- `send` 返回值即传输终态(发出后等待至多 3s 结算):`status: delivered`(已注入对方会话)/ `queued`(已入 codex 队列)/ `pending`(对端暂未收:零 turn codex 被门控、sidecar 重试中);`pending` 的少数情况由异步回执行兜底,收不到任何终态 = 对端没收(idle/停机)。发送结果只带 40 字预览,不回显全文。
 - `send` 的 `recipients` 回显 = **实际送达面**(房间 fan-out 只发给在线成员,被 prune 的离线成员不在列)——据此判断消息覆盖了谁,缺谁就走私信或等其上线。
 - `queued/delivered` 只是传输状态;任务真态走回执链:可执行请求带 owner/范围/完成判据,接收者回 accepted/declined,完成回 done+证据,逾期 unacknowledged。
 - idle 会话的消息在上下文里等下一个 turn,不是丢失;codex 尤其如此。
