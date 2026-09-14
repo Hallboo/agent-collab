@@ -174,14 +174,42 @@ class ClaudeDelivery:
             return DeliveryResult(False, "cc messaging socket delivery failed")
 
 
+def _codex_sessions_dir() -> Path:
+    home = os.environ.get("CODEX_HOME") or str(Path.home() / ".codex")
+    return Path(home) / "sessions"
+
+
 class CodexDelivery:
+    """Queue a notice into a codex TUI thread.
+
+    codex (0.153) consumes queued items only at turn boundaries, and a session that
+    has never run a turn swallows them silently: the item is removed from the queue
+    without ever reaching the thread. Gate the insert on the thread's rollout
+    transcript existing (it is created at the first turn), so an unprimed session
+    keeps the message pending in the spool and the sidecar retries; once the user
+    says anything to the session, the notice is consumed normally.
+    """
+
     def __init__(self, thread_id: str):
         self.thread_id = thread_id
+        self._primed = False
+
+    def _thread_has_first_turn(self) -> bool:
+        if self._primed:
+            return True
+        rollouts = _codex_sessions_dir().glob(f"*/*/*/rollout-*{self.thread_id}*.jsonl")
+        self._primed = next(rollouts, None) is not None
+        return self._primed
 
     def deliver(self, message: dict[str, Any]) -> DeliveryResult:
         executable = shutil.which("codex")
         if executable is None:
             return DeliveryResult(False, "codex executable not found")
+        if not self._thread_has_first_turn():
+            return DeliveryResult(
+                False,
+                "codex session has not run a first turn; queue notice would be swallowed",
+            )
         notice = format_codex_inbox_notice(message)
         try:
             result = subprocess.run(

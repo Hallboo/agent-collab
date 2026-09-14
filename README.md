@@ -80,7 +80,7 @@ The enrolled host label is resolved when each sidecar starts, as an explicit
 `--host-name` launcher argument > `AGENT_COLLAB_HOST` env > machine hostname
 (`src/agent_collab/identity.py::detect_identity`). `configure-mcp` passes no
 `--host-name`, so the label always comes from the machine actually running the
-session. One fixed issue and one operational fact:
+session. Fixed issues and operational facts, newest first:
 
 - **Config reuse across machines mislabels the host (fixed 2026-09-12).**
   Earlier versions stored a fixed `--host-name` launcher argument detected at
@@ -103,6 +103,25 @@ session. One fixed issue and one operational fact:
   brand-new session does not. A sender whose `→ <peer> queued` notice never
   reaches a final status line is looking at a peer that is not receiving;
   `report_to_feishu` can wake the human operator.
+- **A never-used codex session swallows queue notices (fixed 2026-09-14).**
+  codex 0.153 deletes a queued item for a thread that has never run a turn —
+  no injection, no transcript, no error; the notice is gone. `CodexDelivery`
+  now refuses to queue into such a thread — detected via the rollout
+  transcript, which codex writes only at the thread's first turn — and fails
+  the delivery instead, so the message stays pending in the spool and the
+  sidecar retries every few seconds; once the session runs its first turn the
+  notice flows normally. To make a freshly opened codex reachable without
+  waiting, launch it with a one-word positional prompt (for example
+  `codex 'standby; handle Agent Collab notices'`) or wrap the launcher so the
+  primer is always sent.
+- **Codex launch-environment facts (recorded 2026-09-14).** The configured
+  provider `env_key` (for example `OPENAI_API_KEY`) must be present in the
+  shell that starts codex; a codex spawned from a bare environment (cron,
+  non-login tmux) fails every model turn with a missing-variable error. And
+  `--ask-for-approval never` combined with the default sandbox rejects MCP
+  tool calls outright (`MCP tool call requires approval, but approval policy
+  is never`), which breaks the notice → `inbox` read path; run the
+  sandbox/approval combination your operator actually trusts.
 
 ## Chat rooms
 

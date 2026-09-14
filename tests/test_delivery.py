@@ -73,7 +73,16 @@ def test_claude_socket_protocol(tmp_path: Path) -> None:
     assert "hello" in received[1]["message"]["content"]
 
 
-def test_codex_queue_is_not_reported_as_delivered() -> None:
+def _codex_home_with_rollout(monkeypatch, tmp_path: Path, thread_id: str) -> Path:
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    day = tmp_path / "sessions" / "2026" / "09" / "14"
+    day.mkdir(parents=True)
+    (day / f"rollout-2026-09-14T17-17-06-{thread_id}.jsonl").write_text("{}\n")
+    return day
+
+
+def test_codex_queue_is_not_reported_as_delivered(monkeypatch, tmp_path: Path) -> None:
+    _codex_home_with_rollout(monkeypatch, tmp_path, "thread-id")
     completed = subprocess.CompletedProcess(args=["codex", "queue"], returncode=0)
     with (
         patch("shutil.which", return_value="/usr/bin/codex"),
@@ -113,7 +122,8 @@ def test_notice_line_renders_verbatim_without_policy() -> None:
     assert format_codex_inbox_notice({"notice": line, "msg_id": "x"}) == line
 
 
-def test_codex_queue_timeout_reports_the_limit() -> None:
+def test_codex_queue_timeout_reports_the_limit(monkeypatch, tmp_path: Path) -> None:
+    _codex_home_with_rollout(monkeypatch, tmp_path, "thread-id")
     with (
         patch("shutil.which", return_value="/usr/bin/codex"),
         patch(
@@ -131,6 +141,49 @@ def test_codex_queue_timeout_reports_the_limit() -> None:
         )
     assert not result.ok
     assert result.detail == "codex queue timed out after 20 seconds"
+
+
+def test_codex_delivery_holds_back_until_first_turn(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    (tmp_path / "sessions" / "2026" / "09" / "14").mkdir(parents=True)
+    with (
+        patch("shutil.which", return_value="/usr/bin/codex"),
+        patch("subprocess.run") as run,
+    ):
+        result = CodexDelivery("0123abcd").deliver(
+            {
+                "from": "sender@test-host",
+                "from_role": "test",
+                "msg_id": "message-id",
+                "text": "hello",
+            }
+        )
+    assert not result.ok
+    assert "first turn" in result.detail
+    run.assert_not_called()
+
+
+def test_codex_delivery_releases_once_rollout_appears(monkeypatch, tmp_path: Path) -> None:
+    # a different thread's rollout must not unlock delivery for ours
+    day = _codex_home_with_rollout(monkeypatch, tmp_path, "deadbeef")
+    completed = subprocess.CompletedProcess(args=["codex", "queue"], returncode=0)
+    message = {
+        "from": "sender@test-host",
+        "from_role": "test",
+        "msg_id": "message-id",
+        "text": "hello",
+    }
+    with (
+        patch("shutil.which", return_value="/usr/bin/codex"),
+        patch("subprocess.run", return_value=completed),
+    ):
+        delivery = CodexDelivery("0123abcd")
+        held = delivery.deliver(dict(message))
+        (day / "rollout-2026-09-14T18-00-00-0123abcd.jsonl").write_text("{}\n")
+        released = delivery.deliver(dict(message))
+    assert not held.ok
+    assert released.ok
+    assert released.status == "queued"
 
 
 def test_detects_codex_identity_from_parent_when_env_is_missing(
