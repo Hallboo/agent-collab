@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -ne 1 || "$1" != /* ]]; then
+    echo "usage: $0 /absolute/path/to/agent-collab.env" >&2
+    exit 2
+fi
+
+env_file=$1
+if [[ ! -f "$env_file" ]]; then
+    echo "configuration file does not exist: $env_file" >&2
+    exit 1
+fi
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+launcher="$script_dir/agent-collab"
+repo_root=$(CDPATH= cd -- "$script_dir/.." && pwd -P)
+skill_source="$repo_root/skills/find-coagent"
+server_name=agent-collab
+
+# No --host-name is baked into the launcher command: a fixed label travels with
+# shared or migrated client config directories and mislabels the other machine.
+# The sidecar resolves AGENT_COLLAB_HOST > machine hostname when it starts.
+launcher_args=("$launcher" serve --env-file "$env_file")
+if [[ -n "${AGENT_COLLAB_HOST:-}" ]]; then
+    echo "Host label resolves at session start from AGENT_COLLAB_HOST: $AGENT_COLLAB_HOST"
+else
+    echo "Host label resolves at session start from this machine's hostname"
+fi
+
+if [[ ! -x "$launcher" ]]; then
+    echo "agent-collab launcher is not executable: $launcher" >&2
+    exit 1
+fi
+if [[ ! -f "$skill_source/SKILL.md" ]]; then
+    echo "find-coagent skill is missing: $skill_source" >&2
+    exit 1
+fi
+
+install_skill() {
+    local client_name=$1
+    local skills_dir=$2
+    local target="$skills_dir/find-coagent"
+    mkdir -p "$skills_dir"
+    if [[ -L "$target" && "$(readlink -- "$target")" == "$skill_source" ]]; then
+        echo "$client_name skill already installed: find-coagent"
+    elif [[ -e "$target" || -L "$target" ]]; then
+        echo "$client_name skill already exists and was left unchanged: $target" >&2
+    else
+        ln -s "$skill_source" "$target"
+        echo "Installed $client_name skill: find-coagent"
+    fi
+}
+
+configured=0
+
+if command -v codex >/dev/null 2>&1; then
+    if codex mcp get "$server_name" >/dev/null 2>&1; then
+        codex mcp remove "$server_name"
+    fi
+    codex mcp add "$server_name" -- "${launcher_args[@]}"
+    echo "Configured Codex MCP: $server_name"
+    install_skill "Codex" "${COAGENT_CODEX_SKILLS_DIR:-${CODEX_HOME:-$HOME/.codex}/skills}"
+    configured=1
+else
+    echo "Codex CLI not found; skipped" >&2
+fi
+
+if command -v claude >/dev/null 2>&1; then
+    if claude mcp get "$server_name" >/dev/null 2>&1; then
+        claude mcp remove --scope user "$server_name"
+    fi
+    claude mcp add --scope user "$server_name" -- "${launcher_args[@]}"
+    echo "Configured Claude MCP: $server_name"
+    install_skill "Claude" "${COAGENT_CLAUDE_SKILLS_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills}"
+    configured=1
+else
+    echo "Claude CLI not found; skipped" >&2
+fi
+
+if [[ $configured -eq 0 ]]; then
+    echo "Neither Codex nor Claude CLI is installed" >&2
+    exit 1
+fi
+
+echo "Restart Codex/Claude sessions on this host to load the MCP sidecar."

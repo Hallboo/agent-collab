@@ -1,0 +1,16 @@
+.venv/
+.agent-collab/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.py[cod]
+*.egg-info/
+.coverage
+.coverage.*
+htmlcov/
+dist/
+build/
+.env
+.env.*
+*.env
+.DS_Store
