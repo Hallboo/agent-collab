@@ -92,8 +92,9 @@ suggestion).
    (cc and codex alike):
    `[Agent Collab] ← sender-name -> your-name delivered|queued <id8> ·title`
    (room messages append `#short-id`). A second line points at
-   `inbox(message_id="…")` with the full UUID; not calling inbox for it
-   means the message stays unread.
+   `inbox(message_id="…")` with the full UUID — not calling inbox for it
+   means the message stays unread — and names the reply target: `send(to="#short-id")`
+   for room messages, the sender's `name@host` for direct ones.
 - **Every message requires a title**: `send(to, title, text)`, title ≤10
    chars (longer errors), shown in the peer's envelope and your send
    result so both sides can triage without pulling the body; the body

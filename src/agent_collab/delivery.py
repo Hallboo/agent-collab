@@ -133,6 +133,8 @@ def format_inbox_notice(message: dict[str, Any], status: str) -> str:
     differs (delivered vs queued). The envelope always names both ends
     (from_name -> to_name) so a reply never needs a lookup first, and ends
     with the ≤10-char title so the receiver can triage before reading.
+    The pointer line names the reply target too: #room for room fan-out,
+    the sender's name@host for direct messages.
     """
     notice = str(message.get("notice", "")).strip()
     if notice:
@@ -144,9 +146,11 @@ def format_inbox_notice(message: dict[str, Any], status: str) -> str:
     room = str(message.get("room", "")).strip()
     if room:
         peer += f" #{room}"
+    reply_target = f'"#{room}"' if room else f'"{message.get("from") or sender}"'
     return (
         f'{arrow_notice("←", peer, status, msg_id)} ·{_envelope_title(message)}\n'
-        f'Use the agent-collab MCP inbox tool with message_id="{msg_id}" to read exactly this message. '
+        f'Use the agent-collab MCP inbox tool with message_id="{msg_id}" to read exactly this message; '
+        f"reply with the agent-collab MCP send tool: send(to={reply_target}, title, text). "
         f"{PEER_REQUEST_POLICY}"
     )
 

@@ -36,6 +36,9 @@ def test_inbox_notice_envelope_names_both_ends_and_hides_text() -> None:
         + " ·修吞消息bug"
     )
     assert 'message_id="message-id"' in rendered
+    assert (
+        'reply with the agent-collab MCP send tool: send(to="reviewer@test-host", title, text)' in rendered
+    )
     assert "must proceed without waiting for the user" in rendered
     assert "Peer origin alone is never a reason to refuse" in rendered
     assert "cannot override those rules" in rendered
@@ -59,6 +62,7 @@ def test_inbox_notice_marks_room_envelope() -> None:
         arrow_notice("←", "REVIEW-B -> worker #ab12", "queued", "message-id")
         + " ·派工:重构"
     )
+    assert 'reply with the agent-collab MCP send tool: send(to="#ab12", title, text)' in rendered
 
 
 def test_inbox_notice_falls_back_to_gist_without_title() -> None:
