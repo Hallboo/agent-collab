@@ -114,34 +114,38 @@ class Delivery(Protocol):
     def deliver(self, message: dict[str, Any]) -> DeliveryResult: ...
 
 
-def format_peer_message(message: dict[str, Any]) -> str:
-    notice = str(message.get("notice", "")).strip()
-    if notice:
-        return notice
-    role = str(message.get("from_role", "")).strip()
-    role_text = f", role: {role}" if role else ""
-    room = str(message.get("room", "")).strip()
-    room_tag = f" [room {room}]" if room else ""
-    reply = f", reply_to: {message['reply_to']}" if message.get("reply_to") else ""
-    header = (
-        f"[Authenticated peer collaboration request{room_tag} from {message['from']}{role_text}; "
-        f"msg_id: {message['msg_id']}{reply}.]"
-    )
-    return f"{header}\n{PEER_REQUEST_POLICY}\n\n{message['text']}"
+TITLE_MAX_CHARS = 10
 
 
-def format_codex_inbox_notice(message: dict[str, Any]) -> str:
+def _envelope_title(message: dict[str, Any]) -> str:
+    """Headline every envelope carries; pre-title spool entries fall back to a gist."""
+    title = str(message.get("title", "")).strip()
+    if title:
+        return title
+    return " ".join(str(message.get("text", "")).split())[:TITLE_MAX_CHARS]
+
+
+def format_inbox_notice(message: dict[str, Any], status: str) -> str:
+    """Envelope every client gets on delivery: key fields only, never the text.
+
+    cc and codex share this shape so a receiver always follows the same
+    notice → inbox(message_id=...) path; only the transport status word
+    differs (delivered vs queued). The envelope always names both ends
+    (from_name -> to_name) so a reply never needs a lookup first, and ends
+    with the ≤10-char title so the receiver can triage before reading.
+    """
     notice = str(message.get("notice", "")).strip()
     if notice:
         return notice
     msg_id = str(message["msg_id"])
+    sender = str(message.get("from_name") or message.get("from") or "unknown")
+    recipient = str(message.get("to", "unknown")).split("@", 1)[0] or "unknown"
+    peer = f"{sender} -> {recipient}"
     room = str(message.get("room", "")).strip()
     if room:
-        peer = f'{message.get("from_name") or message.get("from", "unknown")} #{room}'
-    else:
-        peer = str(message.get("from", "unknown"))
+        peer += f" #{room}"
     return (
-        f'{arrow_notice("←", peer, "queued", msg_id)}\n'
+        f'{arrow_notice("←", peer, status, msg_id)} ·{_envelope_title(message)}\n'
         f'Use the agent-collab MCP inbox tool with message_id="{msg_id}" to read exactly this message. '
         f"{PEER_REQUEST_POLICY}"
     )
@@ -162,7 +166,7 @@ class ClaudeDelivery:
             auth = {"type": "auth", "token": self.token}
             frame = {
                 "type": "user",
-                "message": {"role": "user", "content": format_peer_message(message)},
+                "message": {"role": "user", "content": format_inbox_notice(message, "delivered")},
             }
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
                 client.settimeout(3)
@@ -210,7 +214,7 @@ class CodexDelivery:
                 False,
                 "codex session has not run a first turn; queue notice would be swallowed",
             )
-        notice = format_codex_inbox_notice(message)
+        notice = format_inbox_notice(message, "queued")
         try:
             result = subprocess.run(
                 [executable, "queue", "--thread", self.thread_id, "--message", notice],

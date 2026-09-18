@@ -29,9 +29,11 @@
 
 ## 消息语义(不要误读)
 
-- `send` 返回值即传输终态(发出后等待至多 3s 结算):`status: delivered`(已注入对方会话)/ `queued`(已入 codex 队列)/ `pending`(对端暂未收:零 turn codex 被门控、sidecar 重试中);`pending` 的少数情况由异步回执行兜底,收不到任何终态 = 对端没收(idle/停机)。发送结果只带 40 字预览,不回显全文。
+- `send` 返回值即传输终态(发出后等待至多 3s 结算):`status: delivered`(已注入对方会话)/ `queued`(已入 codex 队列)/ `pending`(对端暂未收:零 turn codex 被门控、sidecar 重试中);`pending` 的少数情况由异步回执行兜底,收不到任何终态 = 对端没收(idle/停机)。发送结果只带 title,不回显全文。
 - `send` 的 `recipients` 回显 = **实际送达面**(房间 fan-out 只发给在线成员,被 prune 的离线成员不在列)——据此判断消息覆盖了谁,缺谁就走私信或等其上线。
 - `queued/delivered` 只是传输状态;任务真态走回执链:可执行请求带 owner/范围/完成判据,接收者回 accepted/declined,完成回 done+证据,逾期 unacknowledged。
+- **收到的永远是一行信封,不是正文**(cc/codex 一致):`[Agent Collab] ← 发送名 -> 你的名 delivered|queued <id8> ·标题`(房间消息末尾多 `#短ID`)。第二行带完整 UUID 的 `inbox(message_id="…")` 指路;不调 inbox 拉正文 = 没读这条消息。
+- **发消息必须带标题**:`send(to, title, text)`,title ≤10 字(超长报错),显示在对方信封和你的发送回执里,用于收发双方不拉正文就能分类;正文 text 才是内容。
 - idle 会话的消息在上下文里等下一个 turn,不是丢失;codex 尤其如此。
 - **codex 会话必须先跑过一轮 turn 才能收消息**:codex 0.153 只在 turn 边界消费队列,且零 turn 会话会静默吞掉队列通知。sidecar 会检测这一点,把消息扣在 spool 里按 5s 重试,不吞不丢;你对该会话说出**任何一句话**后,消息在下个重试周期(≤5s)自动送达。开新 codex 想收消息,启动命令带一句开场白即可(如 `codex '待命:收到 Agent Collab 通知即处理'`)。发往 codex 的消息延迟下界 ≈ 其当前 turn 剩余时长,非紧急勿重发。
 

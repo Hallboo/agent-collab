@@ -70,6 +70,29 @@ def wait_for(predicate, timeout: float = 5.0) -> None:
     assert predicate(), "condition not reached before timeout"
 
 
+def test_send_validates_title(settings) -> None:
+    sender = CollaborationService(settings, identity("sender", "session-a"))
+    for bad in ("", "   ", "01234567890"):
+        with pytest.raises(StoreError):
+            sender.send("receiver", bad, "hello")
+
+
+def test_send_accepts_exact_ten_char_title(settings) -> None:
+    sender_delivery = RecordingDelivery()
+    receiver_delivery = RecordingDelivery()
+    sender = CollaborationService(settings, identity("sender", "session-a"), sender_delivery)
+    receiver = CollaborationService(settings, identity("receiver", "session-b"), receiver_delivery)
+    sender.start()
+    receiver.start()
+    try:
+        result = sender.send("receiver", "0123456789", "hello")
+        assert result["title"] == "0123456789"
+        assert result["notice"].endswith("·0123456789")
+    finally:
+        receiver.stop()
+        sender.stop()
+
+
 def test_two_services_deliver_once(settings) -> None:
     sender_delivery = RecordingDelivery()
     receiver_delivery = RecordingDelivery()
@@ -78,11 +101,11 @@ def test_two_services_deliver_once(settings) -> None:
     sender.start()
     receiver.start()
     try:
-        result = sender.send("receiver", "hello")
+        result = sender.send("receiver", "标题", "hello")
         assert result["status"] == "delivered"
-        assert result["preview"] == "hello"
+        assert result["title"] == "标题"
         assert result["notice"] == (
-            f"[Agent Collab] → receiver@test-host delivered {result['msg_id'][:8]} ·hello"
+            f"[Agent Collab] → receiver@test-host delivered {result['msg_id'][:8]} ·标题"
         )
         deadline = time.monotonic() + 3
         while not receiver_delivery.messages and time.monotonic() < deadline:
@@ -113,7 +136,7 @@ def test_transient_delivery_failure_is_retried(settings, monkeypatch) -> None:
     sender.start()
     receiver.start()
     try:
-        result = sender.send("receiver", "hello")
+        result = sender.send("receiver", "标题", "hello")
         deadline = time.monotonic() + 3
         messages = []
         while time.monotonic() < deadline:
@@ -147,7 +170,7 @@ def test_sender_receives_final_status_notice(settings, monkeypatch) -> None:
     sender.start()
     receiver.start()
     try:
-        result = sender.send("receiver", "hello")
+        result = sender.send("receiver", "标题", "hello")
         assert result["status"] == "pending"
         deadline = time.monotonic() + 3
         notices = []
@@ -157,7 +180,7 @@ def test_sender_receives_final_status_notice(settings, monkeypatch) -> None:
                 break
             time.sleep(0.01)
         assert [m["notice"] for m in notices] == [
-            f"[Agent Collab] → receiver@test-host delivered {result['msg_id'][:8]} ·hello"
+            f"[Agent Collab] → receiver@test-host delivered {result['msg_id'][:8]} ·标题"
         ]
     finally:
         receiver.stop()
@@ -176,7 +199,7 @@ def test_send_result_settles_without_async_notice(settings) -> None:
     sender.start()
     receiver.start()
     try:
-        result = sender.send("receiver", "hello")
+        result = sender.send("receiver", "标题", "hello")
         assert result["status"] == "delivered"
         time.sleep(0.3)
         assert [m for m in sender_delivery.messages if m.get("notice")] == []
@@ -204,12 +227,12 @@ def test_send_result_reports_pending_when_receiver_cannot_deliver(settings, monk
     sender.start()
     receiver.start()
     try:
-        result = sender.send("receiver", "hello")
+        result = sender.send("receiver", "标题", "hello")
         assert result["status"] == "pending"
         assert result["notice"].startswith(
             f"[Agent Collab] → receiver@test-host pending {result['msg_id'][:8]}"
         )
-        assert result["preview"] == "hello"
+        assert result["title"] == "标题"
     finally:
         receiver.stop()
         sender.stop()
@@ -250,7 +273,7 @@ def test_two_hosts_share_directory_and_deliver(settings) -> None:
     try:
         assert {agent["host"] for agent in sender.store.list_agents()} == {"host-a", "host-b"}
         assert {agent["host"] for agent in receiver.store.list_agents()} == {"host-a", "host-b"}
-        result = sender.send("receiver@host-b", "hello")
+        result = sender.send("receiver@host-b", "标题", "hello")
         deadline = time.monotonic() + 3
         while not receiver_delivery.messages and time.monotonic() < deadline:
             time.sleep(0.01)
@@ -368,11 +391,11 @@ def test_room_flow_create_join_send_leave(settings) -> None:
         assert f"| #{room_id} |" in table
         assert "alpha" in table and "beta" in table and "gamma" in table
 
-        result = a.send(f"#{room_id}", "hello room")
+        result = a.send(f"#{room_id}", "标题", "hello room")
         assert result["to"] == f"#{room_id}"
         assert result["status"] == "delivered 2"
         assert result["notice"] == (
-            f"[Agent Collab] → #{room_id} (2) delivered 2 {result['msg_id'][:8]} ·hello room"
+            f"[Agent Collab] → #{room_id} (2) delivered 2 {result['msg_id'][:8]} ·标题"
         )
 
         chat_to = lambda svc: [
@@ -385,9 +408,9 @@ def test_room_flow_create_join_send_leave(settings) -> None:
         assert [m for m in svc_delivery_messages(a) if m.get("notice")] == []
 
         with pytest.raises(StoreError, match="not a member"):
-            d.send(f"#{room_id}", "intruder")
+            d.send(f"#{room_id}", "标题", "intruder")
         with pytest.raises(StoreError, match="room not found"):
-            d.send("#zzzz", "hello")
+            d.send("#zzzz", "标题", "hello")
 
         c.leave_room()
         leave_notes = lambda svc: [

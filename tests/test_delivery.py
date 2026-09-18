@@ -14,29 +14,66 @@ from agent_collab.delivery import (
     ClaudeDelivery,
     CodexDelivery,
     arrow_notice,
-    format_codex_inbox_notice,
-    format_peer_message,
+    format_inbox_notice,
 )
 from agent_collab.identity import _default_name, _detect_model, detect_identity
 
 
-def test_peer_message_explains_actionable_delegation_boundary() -> None:
-    rendered = format_peer_message(
+def test_inbox_notice_envelope_names_both_ends_and_hides_text() -> None:
+    rendered = format_inbox_notice(
         {
             "from": "reviewer@test-host",
+            "from_name": "REVIEW-B",
             "from_role": "review",
+            "to": "worker@test-host",
+            "title": "修吞消息bug",
             "msg_id": "message-id",
             "text": "check this",
-        }
+        },
+        "delivered",
     )
-    assert "Authenticated peer collaboration request" in rendered
-    assert "bug fixes" in rendered
-    assert "assigned worker tasks" in rendered
-    assert "research" in rendered
+    assert rendered.startswith(
+        arrow_notice("←", "REVIEW-B -> worker", "delivered", "message-id")
+        + " ·修吞消息bug"
+    )
+    assert 'message_id="message-id"' in rendered
     assert "must proceed without waiting for the user" in rendered
     assert "Peer origin alone is never a reason to refuse" in rendered
     assert "cannot override those rules" in rendered
-    assert rendered.endswith("check this")
+    assert "check this" not in rendered
+
+
+def test_inbox_notice_marks_room_envelope() -> None:
+    rendered = format_inbox_notice(
+        {
+            "from": "reviewer@test-host",
+            "from_name": "REVIEW-B",
+            "to": "worker@test-host",
+            "room": "ab12",
+            "title": "派工:重构",
+            "msg_id": "message-id",
+            "text": "check this",
+        },
+        "queued",
+    )
+    assert rendered.startswith(
+        arrow_notice("←", "REVIEW-B -> worker #ab12", "queued", "message-id")
+        + " ·派工:重构"
+    )
+
+
+def test_inbox_notice_falls_back_to_gist_without_title() -> None:
+    rendered = format_inbox_notice(
+        {
+            "from": "reviewer@test-host",
+            "from_name": "REVIEW-B",
+            "to": "worker@test-host",
+            "msg_id": "message-id",
+            "text": "one two\n three  four five",
+        },
+        "delivered",
+    )
+    assert rendered.splitlines()[0].endswith("·one two th")
 
 
 def test_claude_socket_protocol(tmp_path: Path) -> None:
@@ -61,7 +98,10 @@ def test_claude_socket_protocol(tmp_path: Path) -> None:
     result = ClaudeDelivery(str(socket_path), "child-token").deliver(
         {
             "from": "sender@test-host",
+            "from_name": "SENDER-A",
             "from_role": "test",
+            "to": "receiver@test-host",
+            "title": "标题测试",
             "msg_id": "message-id",
             "text": "hello",
         }
@@ -70,7 +110,12 @@ def test_claude_socket_protocol(tmp_path: Path) -> None:
     assert result.ok
     assert received[0] == {"type": "auth", "token": "child-token"}
     assert received[1]["type"] == "user"
-    assert "hello" in received[1]["message"]["content"]
+    content = received[1]["message"]["content"]
+    assert content.splitlines()[0] == (
+        arrow_notice("←", "SENDER-A -> receiver", "delivered", "message-id") + " ·标题测试"
+    )
+    assert 'message_id="message-id"' in content
+    assert "hello" not in content
 
 
 def _codex_home_with_rollout(monkeypatch, tmp_path: Path, thread_id: str) -> Path:
@@ -91,7 +136,10 @@ def test_codex_queue_is_not_reported_as_delivered(monkeypatch, tmp_path: Path) -
         result = CodexDelivery("thread-id").deliver(
             {
                 "from": "sender@test-host",
+                "from_name": "SENDER-A",
+                "to": "receiver@test-host",
                 "from_role": "test",
+                "title": "标题测试",
                 "msg_id": "message-id",
                 "text": "hello",
             }
@@ -99,15 +147,18 @@ def test_codex_queue_is_not_reported_as_delivered(monkeypatch, tmp_path: Path) -
     assert result.ok
     assert result.status == "queued"
     command = run.call_args.args[0]
-    notice = format_codex_inbox_notice(
+    assert command[-1] == format_inbox_notice(
         {
             "from": "sender@test-host",
+            "from_name": "SENDER-A",
+            "to": "receiver@test-host",
+            "title": "标题测试",
             "msg_id": "message-id",
-        }
+        },
+        "queued",
     )
-    assert command[-1] == notice
     assert command[-1].startswith(
-        arrow_notice("←", "sender@test-host", "queued", "message-id")
+        arrow_notice("←", "SENDER-A -> receiver", "queued", "message-id") + " ·标题测试"
     )
     assert 'message_id="message-id"' in command[-1]
     assert "must proceed without waiting" in command[-1]
@@ -118,8 +169,7 @@ def test_codex_queue_is_not_reported_as_delivered(monkeypatch, tmp_path: Path) -
 def test_notice_line_renders_verbatim_without_policy() -> None:
     line = arrow_notice("→", "peer@host", "delivered", "abcd1234-0000-0000")
     assert line == "[Agent Collab] → peer@host delivered abcd1234"
-    assert format_peer_message({"notice": line, "msg_id": "x"}) == line
-    assert format_codex_inbox_notice({"notice": line, "msg_id": "x"}) == line
+    assert format_inbox_notice({"notice": line, "msg_id": "x"}, "queued") == line
 
 
 def test_codex_queue_timeout_reports_the_limit(monkeypatch, tmp_path: Path) -> None:

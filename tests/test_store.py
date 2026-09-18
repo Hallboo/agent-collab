@@ -49,7 +49,7 @@ def test_registration_send_and_archive(settings) -> None:
     store.register(sender)
     store.register(receiver)
 
-    message = store.send(sender, "receiver", "hello", None)
+    message = store.send(sender, "receiver", "标题", "hello", None)
     pending = store.pending(receiver)
     assert [item[1]["msg_id"] for item in pending] == [message["msg_id"]]
     store.archive(pending[0][0], receiver, "delivered")
@@ -64,7 +64,7 @@ def test_pending_skips_deferred_message_without_reading_it(settings) -> None:
     receiver = identity("receiver", "session-b")
     store.register(sender)
     store.register(receiver)
-    message = store.send(sender, "receiver", "hello", None)
+    message = store.send(sender, "receiver", "标题", "hello", None)
 
     with patch.object(store, "_read_payload", side_effect=AssertionError("unexpected read")):
         assert store.pending(receiver, skip_ids={message["msg_id"]}) == []
@@ -87,7 +87,7 @@ def test_tampered_message_is_rejected(settings) -> None:
     receiver = identity("receiver", "session-b")
     store.register(sender)
     store.register(receiver)
-    message = store.send(sender, "receiver", "hello", None)
+    message = store.send(sender, "receiver", "标题", "hello", None)
     path = store.spool_dir / agent_key(receiver.host, receiver.session_id) / f"{message['msg_id']}.json"
     document = json.loads(path.read_text(encoding="utf-8"))
     document["payload"]["text"] = "forged"
@@ -123,7 +123,7 @@ def test_pid_reuse_record_is_not_online(settings) -> None:
     store.register(stale)
     assert store.list_agents() == []
     with pytest.raises(StoreError, match="not online"):
-        store.send(identity("sender", "session-a"), "stale", "hello", None)
+        store.send(identity("sender", "session-a"), "stale", "标题", "hello", None)
 
 
 def test_local_agent_with_stale_sidecar_heartbeat_is_not_online(settings, monkeypatch) -> None:
@@ -154,7 +154,7 @@ def test_remote_agent_uses_signed_heartbeat(settings) -> None:
     )
     assert short_host("build-cluster-worker-node7") == "node7"
     assert short_host("dev-box") == "dev-box"
-    message = observer.send(identity("sender", "session-a", host="host-a"), target, "hello", None)
+    message = observer.send(identity("sender", "session-a", host="host-a"), target, "标题", "hello", None)
     assert message["to"] == "receiver@host-b"
 
 
@@ -171,6 +171,7 @@ def test_stale_remote_heartbeat_is_offline(settings, monkeypatch) -> None:
         observer.send(
             identity("sender", "session-a", host="host-a"),
             "receiver@host-b",
+            "标题",
             "hello",
             None,
         )
@@ -183,8 +184,8 @@ def test_inbox_can_read_one_exact_message(settings) -> None:
     receiver = identity("receiver", "session-b")
     store.register(sender)
     store.register(receiver)
-    first = store.send(sender, "receiver", "first", None)
-    store.send(sender, "receiver", "second", None)
+    first = store.send(sender, "receiver", "标题", "first", None)
+    store.send(sender, "receiver", "标题", "second", None)
 
     messages = store.inbox(
         receiver,
@@ -206,7 +207,7 @@ def test_requeues_failed_message_for_same_online_instance(settings) -> None:
     receiver = identity("receiver", "session-b")
     store.register(sender)
     store.register(receiver)
-    message = store.send(sender, "receiver", "hello", None)
+    message = store.send(sender, "receiver", "标题", "hello", None)
     path, _ = store.pending(receiver)[0]
     store.archive(path, receiver, "failed")
 
@@ -221,7 +222,7 @@ def test_requeues_failed_message_for_same_session_new_instance(settings) -> None
     receiver = identity("receiver", "session-b")
     store.register(sender)
     store.register(receiver)
-    message = store.send(sender, "receiver", "hello", None)
+    message = store.send(sender, "receiver", "标题", "hello", None)
     path, _ = store.pending(receiver)[0]
     store.archive(path, receiver, "failed")
 
@@ -237,7 +238,7 @@ def test_does_not_requeue_failed_message_for_other_session(settings) -> None:
     receiver = identity("receiver", "session-b")
     store.register(sender)
     store.register(receiver)
-    store.send(sender, "receiver", "hello", None)
+    store.send(sender, "receiver", "标题", "hello", None)
     path, _ = store.pending(receiver)[0]
     store.archive(path, receiver, "failed")
 
@@ -253,7 +254,7 @@ def test_sent_status_reports_pending_archived_and_absent(settings) -> None:
     receiver = identity("receiver", "session-b")
     store.register(sender)
     store.register(receiver)
-    message = store.send(sender, "receiver", "hello", None)
+    message = store.send(sender, "receiver", "标题", "hello", None)
     key = agent_key(receiver.host, receiver.session_id)
 
     assert store.sent_status(key, message["msg_id"]) == "pending"
@@ -335,7 +336,7 @@ def test_room_chat_persists_to_jsonl_and_fans_out(settings) -> None:
     created = store.room_create(sender)
     store.room_join(created["room_id"], member)
 
-    sent = store.send_room(sender, f"#{created['room_id']}", "hello room", None)
+    sent = store.send_room(sender, f"#{created['room_id']}", "标题", "hello room", None)
 
     copies = store.pending(member)
     assert [copy[1]["msg_id"] for copy in copies] == [sent["msg_id"]]

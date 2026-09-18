@@ -272,12 +272,14 @@ class FileStore:
         sender: Identity,
         recipient: dict[str, Any],
         msg_id: str,
+        title: str,
         text: str,
         reply_to: str | None,
         room: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "msg_id": msg_id,
+            "title": title,
             "from": sender.address,
             "from_session": sender.session_id,
             "from_instance": sender.instance,
@@ -303,12 +305,13 @@ class FileStore:
         self,
         sender: Identity,
         target: str,
+        title: str,
         text: str,
         reply_to: str | None,
         room: str | None = None,
     ) -> dict[str, Any]:
         recipient = self._resolve_target(target)
-        return self._deliver_single(sender, recipient, str(uuid.uuid4()), text, reply_to, room)
+        return self._deliver_single(sender, recipient, str(uuid.uuid4()), title, text, reply_to, room)
 
     def pending(
         self,
@@ -429,6 +432,7 @@ class FileStore:
         kind: str,
         room_id: str,
         sender: Identity,
+        title: str,
         text: str,
         msg_id: str | None = None,
     ) -> None:
@@ -437,6 +441,7 @@ class FileStore:
             "room": room_id,
             "from": sender.address,
             "from_name": sender.name,
+            "title": title,
             "text": text,
             "time": utc_now(),
         }
@@ -488,7 +493,7 @@ class FileStore:
                 seal(payload, self.settings.auth_key),
                 overwrite=False,
             )
-        self.room_append_event(long_id, "created", short_id, creator, f"room created by {creator.address}")
+        self.room_append_event(long_id, "created", short_id, creator, "房间创建", f"room created by {creator.address}")
         return {"room_id": short_id, "long_id": long_id}
 
     def room_resolve(self, room_id: str) -> tuple[str, dict[str, Any]]:
@@ -555,7 +560,7 @@ class FileStore:
                 seal(payload, self.settings.auth_key),
                 overwrite=True,
             )
-        self.room_append_event(long_id, "join", str(payload["room_id"]), identity, f"{identity.name} joined")
+        self.room_append_event(long_id, "join", str(payload["room_id"]), identity, "成员加入", f"{identity.name} joined")
         return {"room_id": payload["room_id"], "long_id": long_id, "members": payload["members"], "already": False}
 
     def room_leave(self, room_id: str, identity: Identity) -> dict[str, Any]:
@@ -571,7 +576,7 @@ class FileStore:
                 seal(payload, self.settings.auth_key),
                 overwrite=True,
             )
-        self.room_append_event(long_id, "leave", str(payload["room_id"]), identity, f"{identity.name} left")
+        self.room_append_event(long_id, "leave", str(payload["room_id"]), identity, "成员离开", f"{identity.name} left")
         return {"room_id": payload["room_id"], "long_id": long_id, "members": members}
 
     def rooms_of(self, identity: Identity) -> list[str]:
@@ -586,6 +591,7 @@ class FileStore:
         self,
         sender: Identity,
         room_id: str,
+        title: str,
         text: str,
         reply_to: str | None,
     ) -> dict[str, Any]:
@@ -607,6 +613,7 @@ class FileStore:
                 sender,
                 online,
                 msg_id,
+                title,
                 text,
                 reply_to,
                 short_id,
@@ -618,7 +625,7 @@ class FileStore:
                     "agent_id": str(member["agent_id"]),
                 }
             )
-        self.room_append_event(long_id, "chat", short_id, sender, text, msg_id)
+        self.room_append_event(long_id, "chat", short_id, sender, title, text, msg_id)
         return {"msg_id": msg_id, "room_id": short_id, "long_id": long_id, "recipients": recipients}
 
     def list_rooms(self) -> list[dict[str, Any]]:

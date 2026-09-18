@@ -93,16 +93,20 @@ session. Fixed issues and operational facts, newest first:
   when the sidecar starts. Client entries written by older versions still
   carry the old argument — re-run `configure-mcp` on each machine to replace
   them.
-- **Codex reception is turn-based (fixed 2026-09-12).** A Claude receiver
-  gets the full text injected through its messaging socket. A Codex receiver
-  only gets a one-line queue notice (`[Agent Collab] ← <peer> queued <id8>`)
-  and must call `inbox` for the text, so an idle codex waiting at its TUI
-  consumes nothing until its next turn, and a stopped codex has no sidecar at
-  all. Persisted messages survive both: a session that resumes
-  (`codex resume`) inherits its pending backlog on sidecar start, while a
-  brand-new session does not. A sender whose `→ <peer> queued` notice never
-  reaches a final status line is looking at a peer that is not receiving;
-  `report_to_feishu` can wake the human operator.
+- **Reception is an envelope plus an inbox read (unified 2026-09-14).** Every
+  receiver — Claude and codex alike — gets a one-line envelope
+  (`[Agent Collab] ← <from_name> -> <to_name> <status> <id8> ·<title>`, with
+  `#<room>` appended for room fan-out) plus the message UUID in its
+  `inbox(message_id=...)` pointer, and must call `inbox` for the text; the
+  peer text itself is never pushed into a session. Messages carry a required
+  ≤10-char `title` that every envelope and the `send` result show in place of
+  any body preview. Before this change a Claude receiver got the full text
+  injected through its messaging socket. A
+  stopped codex has no sidecar at all. Persisted messages survive both: a
+  session that resumes (`codex resume`) inherits its pending backlog on
+  sidecar start, while a brand-new session does not. A sender whose `→
+  <peer> queued` notice never reaches a final status line is looking at a
+  peer that is not receiving; `report_to_feishu` can wake the human operator.
 - **A never-used codex session swallows queue notices (fixed 2026-09-14).**
   codex 0.153 deletes a queued item for a thread that has never run a turn —
   no injection, no transcript, no error; the notice is gone. `CodexDelivery`
@@ -153,7 +157,7 @@ If the shared filesystem cannot provide those semantics, use a host-local state 
 - `set_identity(role, name?)`
 - `list_agents()`
 - `find_coagents()` — read-only Markdown table of online agents (client, model, PID, copyable Agent ID) plus, when rooms exist, a `Room ID / Members / Created` table; `#<room id>` is directly usable as `send(to=...)`
-- `send(to, text, reply_to?)` — `to` is a peer target or `#<room id>`
+- `send(to, title, text, reply_to?)` — `to` is a peer target or `#<room id>`; `title` is a required ≤10-char headline carried in every envelope, `text` is the body
 - `inbox(since?, limit?, message_id?)`
 - `report_to_feishu(text, title?)`
 - `create_room(members?)`
@@ -164,9 +168,9 @@ Use `name@host` for an explicit cross-host target. A bare name works only when i
 
 The optional [`find-coagent`](skills/find-coagent/SKILL.md) skill routes natural-language requests such as “find coagent” to `find_coagents()` instead of Claude's built-in team/subagent listing. Discovery only reads signed registrations; it never sends a message or changes another Agent's context. The caller's row is marked `（本机·自己）`; other sessions on that Host are marked `（本机）`. `Agent ID` is the table's first column and follows one observer-independent rule: `<repo-directory>_<claude-or-codex>_<host-label>_<PID>`. A configured Host name of at most 12 characters is kept intact; longer machine names use their final segment, limited to 12 characters. Non-variable characters become underscores and PID stays full decimal. For example, `agent_collab_codex_dev_box_4242` can be double-clicked and passed directly to `send(to=...)`.
 
-`send` durably persists the message before the receiving sidecar attempts delivery, and its result settles the transport status within a bounded wait (`send_wait_seconds`, default 3 s) instead of returning an unconditional "queued": `status` is `delivered` (injected into a Claude session), `queued` (accepted into a codex queue), an aggregate like `delivered 2 queued 1` for rooms, or `pending` when the receiver sidecar has not confirmed yet. The result carries a one-line notice `[Agent Collab] → <peer> <status> <id8> ·<first 40 chars>` and never echoes the full body. A transient delivery failure remains pending and is retried while the target session stays online; an instance that resumes the same client session inherits the pending backlog, so `codex resume` picks up messages that arrived while the process was down. Delivery is at least once, so a crash at the delivery/archive boundary can produce a duplicate notification rather than lose a message. Messages are never redirected to an unrelated new session or by display name. A send that returned `pending` gets one asynchronous final status line injected into the sending session when the receiver completes (or the copy gives up); a `pending` that never reaches a final status line means the peer is not currently receiving.
+`send` durably persists the message before the receiving sidecar attempts delivery, and its result settles the transport status within a bounded wait (`send_wait_seconds`, default 3 s) instead of returning an unconditional "queued": `status` is `delivered` (injected into a Claude session), `queued` (accepted into a codex queue), an aggregate like `delivered 2 queued 1` for rooms, or `pending` when the receiver sidecar has not confirmed yet. The result carries a one-line notice `[Agent Collab] → <peer> <status> <id8> ·<title>` and never echoes the full body. A transient delivery failure remains pending and is retried while the target session stays online; an instance that resumes the same client session inherits the pending backlog, so `codex resume` picks up messages that arrived while the process was down. Delivery is at least once, so a crash at the delivery/archive boundary can produce a duplicate notification rather than lose a message. Messages are never redirected to an unrelated new session or by display name. A send that returned `pending` gets one asynchronous final status line injected into the sending session when the receiver completes (or the copy gives up); a `pending` that never reaches a final status line means the peer is not currently receiving.
 
-Claude socket success is recorded as `delivered`. Codex delivery uses `codex queue` and is recorded as `queued`; this does not prove the current turn was interrupted or that the model consumed the message. Each Codex notice leads with `[Agent Collab] ← <peer> queued <id8>` and carries the message UUID in its `inbox(message_id=...)` pointer, so batching limits and sender clock skew cannot hide that message. The queue receives only this authenticated lookup notice, never the peer text itself.
+Claude socket success is recorded as `delivered`. Codex delivery uses `codex queue` and is recorded as `queued`; this does not prove the current turn was interrupted or that the model consumed the message. Every envelope — Claude and codex alike — leads with `[Agent Collab] ← <from_name> -> <to_name> <status> <id8> ·<title>` and carries the message UUID in its `inbox(message_id=...)` pointer, so batching limits and sender clock skew cannot hide that message. Only this authenticated lookup envelope is ever pushed, never the peer text itself.
 
 ## Development checks
 

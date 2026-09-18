@@ -68,9 +68,9 @@ def find_coagents() -> str:
 
 
 @MCP.tool()
-def send(to: str, text: str, reply_to: str | None = None) -> dict[str, Any]:
-    """Persist a text message for one explicit online Agent session."""
-    return service().send(to=to, text=text, reply_to=reply_to)
+def send(to: str, title: str, text: str, reply_to: str | None = None) -> dict[str, Any]:
+    """Persist a message (title ≤10 chars + body text) for one explicit online Agent session."""
+    return service().send(to=to, title=title, text=text, reply_to=reply_to)
 
 
 @MCP.tool()

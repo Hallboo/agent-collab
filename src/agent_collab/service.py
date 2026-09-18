@@ -11,6 +11,7 @@ from .delivery import (
     PEER_REQUEST_POLICY,
     Delivery,
     DeliveryResult,
+    TITLE_MAX_CHARS,
     arrow_notice,
     delivery_from_environment,
     room_charter,
@@ -23,16 +24,10 @@ LOG = logging.getLogger(__name__)
 DELIVERY_RETRY_SECONDS = 5.0
 SENT_STATUS_MAX_ATTEMPTS = 5
 NAME_COLLISION_RETRIES = 12
-PREVIEW_CHARS = 40
 
 
-def _preview(text: str) -> str:
-    """One-line, first-N-chars gist so a human can tell sends apart in tool output."""
-    return " ".join(text.split())[:PREVIEW_CHARS]
-
-
-def _send_notice(label: str, status_word: str, msg_id: str, preview: str) -> str:
-    return f"{arrow_notice('→', label, status_word, msg_id)} ·{preview}"
+def _send_notice(label: str, status_word: str, msg_id: str, title: str) -> str:
+    return f"{arrow_notice('→', label, status_word, msg_id)} ·{title}"
 
 
 class RateLimitError(RuntimeError):
@@ -217,7 +212,7 @@ class CollaborationService:
             if not settled:
                 continue
             status_word = self._status_word(counts, len(members))
-            notice = _send_notice(str(entry["label"]), status_word, msg_id, str(entry.get("preview", "")))
+            notice = _send_notice(str(entry["label"]), status_word, msg_id, str(entry.get("title", "")))
             try:
                 result = self.delivery.deliver({"notice": notice, "msg_id": msg_id})
             except Exception as exc:  # noqa: BLE001 - status notices must not kill the watcher
@@ -310,37 +305,36 @@ class CollaborationService:
                 )
         return "\n".join(lines)
 
-    def send(self, to: str, text: str, reply_to: str | None = None) -> dict[str, Any]:
+    def send(self, to: str, title: str, text: str, reply_to: str | None = None) -> dict[str, Any]:
+        self._validate_title(title)
         self._validate_text(text)
         self.rate_limiter.acquire()
         if to.lstrip().startswith("#"):
-            return self._send_room(to, text, reply_to)
-        message = self.store.send(self.identity, to, text, reply_to)
+            return self._send_room(to, title, text, reply_to)
+        message = self.store.send(self.identity, to, title, text, reply_to)
         msg_id = str(message["msg_id"])
         peer = str(message["to"])
         host = peer.split("@", 1)[1]
-        preview = _preview(text)
         entry = {
             "label": peer,
             "room": False,
             "members": [(agent_key(host, str(message["to_session"])), peer, None)],
             "attempts": 0,
-            "preview": preview,
+            "title": title,
         }
         status_word = self._settle_or_keep_pending(msg_id, entry)
         return {
             "msg_id": msg_id,
             "to": peer,
             "status": status_word,
-            "preview": preview,
-            "notice": _send_notice(peer, status_word, msg_id, preview),
+            "title": title,
+            "notice": _send_notice(peer, status_word, msg_id, title),
         }
 
-    def _send_room(self, to: str, text: str, reply_to: str | None) -> dict[str, Any]:
-        result = self.store.send_room(self.identity, to, text, reply_to)
+    def _send_room(self, to: str, title: str, text: str, reply_to: str | None) -> dict[str, Any]:
+        result = self.store.send_room(self.identity, to, title, text, reply_to)
         msg_id = str(result["msg_id"])
         label = f"#{result['room_id']}"
-        preview = _preview(text)
         entry = {
             "label": label,
             "room": True,
@@ -349,7 +343,7 @@ class CollaborationService:
                 for recipient in result["recipients"]
             ],
             "attempts": 0,
-            "preview": preview,
+            "title": title,
         }
         status_word = self._settle_or_keep_pending(msg_id, entry)
         return {
@@ -357,8 +351,8 @@ class CollaborationService:
             "to": label,
             "status": status_word,
             "recipients": [str(recipient["address"]) for recipient in result["recipients"]],
-            "preview": preview,
-            "notice": _send_notice(f"{label} ({len(entry['members'])})", status_word, msg_id, preview),
+            "title": title,
+            "notice": _send_notice(f"{label} ({len(entry['members'])})", status_word, msg_id, title),
         }
 
     def _settle_or_keep_pending(self, msg_id: str, entry: dict[str, Any]) -> str:
@@ -391,7 +385,7 @@ class CollaborationService:
                 f"[room {room_id}] {self.identity.name} invites you to chat room #{room_id}. "
                 f'Join with join_room(room_id="{room_id}"), then send with send(to="#{room_id}", ...).'
             )
-            self.store.send(self.identity, target, invite, None, room=room_id)
+            self.store.send(self.identity, target, "房间邀请", invite, None, room=room_id)
             invited.append(f"{recipient['name']}@{recipient['host']}")
         return {
             "room_id": room_id,
@@ -409,7 +403,7 @@ class CollaborationService:
             raise StoreError(f"already in room #{current[0]}; call leave_room() first (one room per agent)")
         joined = self.store.room_join(room_id, self.identity)
         if not joined["already"]:
-            self._broadcast_room_event(str(joined["room_id"]), joined["members"], f"{self.identity.name} 加入了聊天室")
+            self._broadcast_room_event(str(joined["room_id"]), joined["members"], "成员加入", f"{self.identity.name} 加入了聊天室")
         me = self._agent_id()
         return {
             "room_id": joined["room_id"],
@@ -435,10 +429,12 @@ class CollaborationService:
         if not current:
             raise StoreError("not in any room")
         left = self.store.room_leave(current[0], self.identity)
-        self._broadcast_room_event(str(left["room_id"]), left["members"], f"{self.identity.name} 离开了聊天室")
+        self._broadcast_room_event(str(left["room_id"]), left["members"], "成员离开", f"{self.identity.name} 离开了聊天室")
         return {"left": left["room_id"]}
 
-    def _broadcast_room_event(self, room_id: str, members: list[dict[str, Any]], text: str) -> None:
+    def _broadcast_room_event(
+        self, room_id: str, members: list[dict[str, Any]], title: str, text: str
+    ) -> None:
         my_agent_id = self._agent_id()
         for member in members:
             if str(member["agent_id"]) == my_agent_id:
@@ -449,6 +445,7 @@ class CollaborationService:
             self.store.send(
                 self.identity,
                 f"{online['name']}@{online['host']}",
+                title,
                 f"[room {room_id}] {text}",
                 None,
                 room=room_id,
@@ -489,6 +486,14 @@ class CollaborationService:
         )
         result = post_text(self.settings.feishu_webhook_url, body)
         return {"sent": result.ok, "detail": result.detail}
+
+    def _validate_title(self, title: str) -> None:
+        if not title or not title.strip():
+            raise StoreError("title cannot be empty")
+        if len(title.strip()) > TITLE_MAX_CHARS:
+            raise StoreError(f"title exceeds {TITLE_MAX_CHARS} characters")
+        if self.settings.contains_secret(title):
+            raise StoreError("title contains a configured secret")
 
     def _validate_text(self, text: str) -> None:
         if not text or not text.strip():
