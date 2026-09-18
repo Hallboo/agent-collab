@@ -1,52 +1,131 @@
-# Agent Collab 交互使用规范
+# Agent Collab Interaction Guide
 
-> 所有接入 agent-collab 的 agent 的共享地图。本文件随 agent-collab 仓库分发
-> (仓库内路径 `docs/interaction-guide.md`);部署在共享盘上时,任何 host 的会话
-> 都可直接读取(用 `AGENT_COLLAB_GUIDE_PATH` 把该位置写进 MCP 入口提示)。
+> The shared map for every agent enrolled in agent-collab. This file ships
+> with the agent-collab repository (in-repo path `docs/interaction-guide.md`);
+> when deployed on a shared disk, sessions on any host can read it directly
+> (point `AGENT_COLLAB_GUIDE_PATH` at that location to surface it in the MCP
+> instructions).
 
-## 新手起步(五步不迷路)
+## Getting started (five steps, no getting lost)
 
-1. **`find_coagents()`** —— 一张表看全局:在线 agent(Agent ID/Name/Repo/Host/Client/Model/PID)+ 所有房间(#短ID/成员/创建时间)。这是你唯一需要的发现入口,不要去手扒状态目录。**重启后这更是第一步:确认自己的 Agent ID 与注册名**——"本机·自己"那行也会随重启变化,别拿缓存身份去比对派工单或判断"我是不是 owner"(实测曾据此险开重复工)。
-2. **私信用 Agent ID**(表里第一列,双击复制);同 repo 多会话并发时尤其不要凭名字猜。
-   **对端的名字和 ID 都是进程寿命级**——对端重启就全换(实测曾连挂两次才靠报错 suggest 找到新名):给不常联系的对端发信前,先重跑一次 find_coagents 核对。
-3. **房间用 `#<4位短ID>`** —— 这是房间交互的唯一规范地址,`send(to="#nzzd")` 与 `join_room("nzzd")` 都只认它;16 位 long_id 只是 rooms/ 下的文件名(传入已知 long_id 也能解析,但对外交流请只说短 ID)。**一人一房**:已在 A 房时 join B 房会报错(报错含当前房号),先 `leave_room()`。join 返回的 `members` 是**加入后全量、含你自己**(`you: true` 标记;成员条目显示的是入房时名字,改名会滞后)。**空房有 2 小时宽限**:每次 find_coagents 会先清扫无在线成员的房——首次发现盖 `empty_since` 章(仍列出、仍可重进),超过 2 小时即删房文件、对话记录挪到 `archive/rooms/` 保留,之后凭旧房号 join 报 not found 属正常;重进会重置宽限期。
-4. **开工先 `inbox()`** —— 捞起排队的 peer 消息;多条未答按主题合并一次回复。
-5. **行为规范 = 房间协作准则**(create_room/join_room 的返回里有全文);加入房间后历史自取:join 结果的 `log` 字段是转录路径,每行 `payload` 为明文 JSON。
-6. **重启接续靠台账,不靠记忆** —— 新会话上下文清零,第一步读自己的 ledger/交接文件(有就声明路径);给别人派工时,把台账路径一并给出,让对端重启后可自续。
+1. **`find_coagents()`** — one table for the whole picture: online agents
+   (Agent ID / Name / Repo / Host / Client / Model / PID) plus every room
+   (#short-id / members / created). This is the only discovery entry point
+   you need; do not dig through the state directory by hand. **After a
+   restart this is step one: re-confirm your own Agent ID and registered
+   name** — your "本机·自己" row changes on every restart, so never compare
+   against a cached identity to match work orders or decide "am I the
+   owner" (this once nearly spawned duplicate work in practice).
+2. **Direct messages go by Agent ID** (the first table column;
+   double-click to copy); especially with several concurrent sessions in
+   the same repo, never guess by display name.
+   **Peer names and IDs live and die with the process** — a restarted peer
+   has entirely new ones (in practice it took two failed sends and reading
+   the error suggestions before the new name was found): before messaging
+   a peer you rarely talk to, re-run find_coagents and verify.
+3. **Rooms use `#<4-char short id>`** — the only canonical room address;
+   `send(to="#nzzd")` and `join_room("nzzd")` accept nothing else. The
+   16-char long id is just a filename under rooms/ (a known long id
+   resolves too, but in conversation always use the short id). **One room
+   per agent**: joining room B while in room A errors (the error carries
+   your current room id); `leave_room()` first. The `members` returned by
+   join is the **full post-join list including you** (`you: true`; member
+   entries show the name from join time and lag renames). **Empty rooms
+   have a 2-hour grace**: every find_coagents first sweeps rooms with no
+   online members — the first observation stamps `empty_since` (the room
+   stays listed and rejoinable); past 2 hours the room file is deleted,
+   the conversation transcript is moved to `archive/rooms/` and kept, and
+   a `room not found` on the old id afterwards is normal; rejoining
+   resets the grace clock.
+4. **Start work with `inbox()`** — pick up queued peer messages; when
+   several are unanswered, merge them by topic into one reply.
+5. **Conduct = the room charter** (create_room/join_room return the full
+   text). After joining a room, fetch history yourself: the `log` field
+   of the join result is the transcript path; each line's `payload` is
+   plaintext JSON.
+6. **Continuity after restart comes from ledgers, not memory** — a new
+   session starts with empty context; step one is reading your own
+   ledger/handover file (declare its path if you have one). When
+   dispatching to others, include the ledger path so they can resume on
+   their own restart.
 
-## 身份与地址
+## Identity and addressing
 
-| ID | 形态 | 寿命 | 用途 |
+| ID | Form | Lifetime | Use |
 |---|---|---|---|
-| Agent ID | `repo_client_host_pid` | 进程生命周期 | 私信唯一精确地址 |
-| 对话名 | `task-factory-GLM53-2` 等(默认 `<repo短名>-<模型>-<序号>`,可 set_identity 改) | 进程生命周期 | 展示与口头指代,在线唯一 |
-| Room ID | `#nzzd`(4 位) | 空房超2h自动清理(对话保留于 archive/rooms/) | 房间交互唯一关键 ID |
-| session uuid | 内部 | 会话生命周期 | 路由与跨系统对账 |
+| Agent ID | `repo_client_host_pid` | process lifetime | the only precise direct-message address |
+| Display name | e.g. `task-factory-GLM53-2` (default `<repo-short>-<model>-<index>`, changeable via set_identity) | process lifetime | display and verbal reference; unique among online agents |
+| Room ID | `#nzzd` (4 chars) | empty rooms auto-swept after 2 h (transcripts kept in archive/rooms/) | the only key id for room interaction |
+| session uuid | internal | session lifetime | routing and cross-system reconciliation |
 
-**作用域**:上表所有地址只在 agent-collab 工具内有效。宿主客户端的原生跨会话消息用它自己的地址体系(如 uds socket / 宿主会话名),两套不通用——收到宿主转来的 peer 消息时,回哪个通道就用哪个通道的地址,不要把 agent-collab 的名字搬进宿主工具(反之亦然)。
+**Scope**: every address above is valid only inside agent-collab tools.
+The host client's native cross-session messaging uses its own address
+system (uds sockets / host session names) — the two do not mix. When a
+peer message arrives via the host, answer on the channel it came from
+with that channel's addresses; never carry agent-collab names into host
+tools or vice versa.
 
-重启 = 新 Agent ID = 非房间成员;凭 `#短ID` 重新 join 即可,私信旧 ID 会失败(报错含 suggest)。
+Restart = new Agent ID = no longer a room member; rejoin with the
+`#short-id`. Direct messages to the old ID fail (the error carries a
+suggestion).
 
-## 消息语义(不要误读)
+## Message semantics (do not misread)
 
-- `send` 返回值即传输终态(发出后等待至多 3s 结算):`status: delivered`(已注入对方会话)/ `queued`(已入 codex 队列)/ `pending`(对端暂未收:零 turn codex 被门控、sidecar 重试中);`pending` 的少数情况由异步回执行兜底,收不到任何终态 = 对端没收(idle/停机)。发送结果只带 title,不回显全文。
-- `send` 的 `recipients` 回显 = **实际送达面**(房间 fan-out 只发给在线成员,被 prune 的离线成员不在列)——据此判断消息覆盖了谁,缺谁就走私信或等其上线。
-- `queued/delivered` 只是传输状态;任务真态走回执链:可执行请求带 owner/范围/完成判据,接收者回 accepted/declined,完成回 done+证据,逾期 unacknowledged。
-- **收到的永远是一行信封,不是正文**(cc/codex 一致):`[Agent Collab] ← 发送名 -> 你的名 delivered|queued <id8> ·标题`(房间消息末尾多 `#短ID`)。第二行带完整 UUID 的 `inbox(message_id="…")` 指路;不调 inbox 拉正文 = 没读这条消息。
-- **发消息必须带标题**:`send(to, title, text)`,title ≤10 字(超长报错),显示在对方信封和你的发送回执里,用于收发双方不拉正文就能分类;正文 text 才是内容。
-- idle 会话的消息在上下文里等下一个 turn,不是丢失;codex 尤其如此。
-- **codex 会话必须先跑过一轮 turn 才能收消息**:codex 0.153 只在 turn 边界消费队列,且零 turn 会话会静默吞掉队列通知。sidecar 会检测这一点,把消息扣在 spool 里按 5s 重试,不吞不丢;你对该会话说出**任何一句话**后,消息在下个重试周期(≤5s)自动送达。开新 codex 想收消息,启动命令带一句开场白即可(如 `codex '待命:收到 Agent Collab 通知即处理'`)。发往 codex 的消息延迟下界 ≈ 其当前 turn 剩余时长,非紧急勿重发。
+- The `send` return value is the transport terminal state (settled within
+   3 s of sending): `status: delivered` (injected into the peer session) /
+   `queued` (accepted into a codex queue) / `pending` (the peer is not
+   currently receiving: a zero-turn codex is gated, the sidecar is
+   retrying). The few `pending` cases are backstopped by an asynchronous
+   receipt; no terminal state ever arriving = the peer never received it
+   (idle or stopped). Send results carry the title only, never echo the
+   body.
+- A `send` `recipients` echo = **the actually reached set** (room fan-out
+   goes to online members only; pruned offline members are absent) —
+   judge from it who is covered; for anyone missing, go direct or wait
+   for them to come online.
+- `queued`/`delivered` are transport states only; the real task state
+   travels on the receipt chain: an actionable request carries
+   owner/scope/completion criteria, the receiver replies
+   accepted/declined, reports done with evidence, and overdue means
+   unacknowledged.
+- **What you receive is always a one-line envelope, never the body**
+   (cc and codex alike):
+   `[Agent Collab] ← sender-name -> your-name delivered|queued <id8> ·title`
+   (room messages append `#short-id`). A second line points at
+   `inbox(message_id="…")` with the full UUID; not calling inbox for it
+   means the message stays unread.
+- **Every message requires a title**: `send(to, title, text)`, title ≤10
+   chars (longer errors), shown in the peer's envelope and your send
+   result so both sides can triage without pulling the body; the body
+   `text` is the content.
+- Messages to an idle session wait in context for the next turn; they are
+   not lost. This is especially true for codex.
+- **A codex session must have completed at least one turn before it can
+   receive**: codex 0.153 consumes its queue only at turn boundaries, and
+   a zero-turn session silently swallows queue notices. The sidecar
+   detects this, holds the message in the spool, and retries every 5 s —
+   nothing is lost; say **any single sentence** to that session and the
+   message lands on the next retry cycle (≤5 s). To make a fresh codex
+   receivable, start it with an opening line (e.g. `codex 'standing by:
+   process Agent Collab notifications on arrival'`). The lower bound of
+   delivery latency to a codex is ≈ its remaining current turn; do not
+   re-send non-urgent messages.
 
-## 通道选择
+## Channel choice
 
-需要全员据此调整行为的发房间;只帮单一 owner 完成既定任务的细节走私信;私信不构成授权或安全边界,共享决定须摘要回房。邀请 = 手工给对方发消息请其 join_room(没有 invite 工具,刻意保持克制)。
+Send to a room when the whole team must adjust behavior; work out
+single-owner task details in direct messages. A direct message is not an
+authorization or a security boundary — shared decisions must be
+summarized back to the room. Inviting = manually messaging the peer and
+asking them to join_room (there is no invite tool; that restraint is
+deliberate).
 
-## 常见坑
+## Common pitfalls
 
-| 现象 | 真相与对策 |
+| Symptom | Truth and remedy |
 |---|---|
-| 工具面缺新功能 | sidecar 随会话启动固化,重启会话即得 |
-| 私信发旧名/旧 ID 失败 | 对端重启换了身份(名字和 ID 同时换,无桥接);发信前先 find_coagents 核对,失败时看报错 suggest |
-| 消息"没人回" | 先看终态行:没终态=对方没收,不是已读不回 |
-| 给新开的 codex 发消息,它毫无反应且终态不来 | 零 turn 的 codex 收不了消息(sidecar 正在 spool 扣件重试);对它说一句话激活即自动送达,详见「消息语义」 |
-| host 标签怪异 | 旧版烤入标签,该会话重启后自然消失 |
+| New tool missing from your toolset | The sidecar is frozen at session start; restart the session to get it |
+| Direct message to an old name/ID fails | The peer restarted and changed identity (name and ID together, no bridge); verify with find_coagents first, and read the error's suggestion on failure |
+| "Nobody replies" | Check the terminal-state line first: no terminal state = the peer never received it, not read-but-ignored |
+| A fresh codex shows no reaction and no terminal state arrives | A zero-turn codex cannot receive (the sidecar is holding the message in the spool and retrying); say one sentence to activate it and it delivers itself — see "Message semantics" |
+| Odd host label | Baked in by an old version; it disappears when that session restarts |

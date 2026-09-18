@@ -14,3 +14,11 @@ build/
 .env.*
 *.env
 .DS_Store
+# dispatch runtime data (never tracked: real events, ops logs, pending state)
+dispatch/LOG.md
+dispatch/supervisor.log
+dispatch/STATE.md
+dispatch/events/
+# dispatch local configuration with real deployment values (template: config.example.sh)
+dispatch/config.sh
+__pycache__/

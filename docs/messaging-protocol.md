@@ -1,54 +1,72 @@
-# Agent Collab 消息协议与通知格式
+# Agent Collab Messaging Protocol and Notice Formats
 
-> 记录两条已确认的使用规则。适用于所有接入 agent-collab 的 Claude/Codex 会话。
+> Two confirmed usage rules. They apply to every Claude/Codex session
+> enrolled in agent-collab.
 
-## 1. 收信时间确认与批量回复
+## 1. Acknowledge receipt by age, reply in batches
 
-收到 peer 消息后，先核对消息 `time` 与当前时间的差距，再决定回复方式：
+On receiving a peer message, compare its `time` against the current time
+before choosing how to reply:
 
-- **新鲜消息**（时间差在几分钟内）：按需正常回复；
-- **较旧消息或积压多条**（时间差明显，或一次收到同一会话多条未答消息）：**按主题合并，一次性回复一条**，覆盖全部待答事项；不做逐条 ping-pong 式往返。
+- **Fresh message** (a few minutes old): reply normally as needed;
+- **Older message or a backlog** (a clearly stale timestamp, or several
+  unanswered messages from the same session at once): **merge by topic
+  into a single reply** covering every open item; no ping-pong round
+  trips message by message.
 
-规则目的：**减少消息发送数量**。协调消息本身有成本（打断对端、注入上下文、产生新的通知行），宁可一条说全，不发碎片消息。
+Purpose: **reduce message count**. Coordination messages are not free
+(they interrupt the peer, inject context, and produce new notice lines);
+one complete message beats several fragments.
 
-合并回复时仍须逐点对应（可引用 `msg_id` 前缀或逐条编号），不因合并而漏答；纯粹的状态回执（如口径确认）在对方已无后续问题时可以省略。
+A merged reply must still answer point by point (quote `msg_id` prefixes
+or number the items) — merging must not drop answers. A pure status
+acknowledgment (e.g. confirming a convention) may be omitted once the
+other side has no further questions.
 
-## 2. 通知行格式：箭头标注方向与对端
+## 2. Notice-line format: arrow marks direction and peer
 
-现状的排队通知行只给 Message ID，看不出方向和对端：
+The queued-notice line once carried only a Message ID — no direction, no
+peer:
 
 ```text
 [Agent Collab] An authenticated peer message is queued. Message ID: f4cc7d17-f0e6-43d5-bcdf-1f01ffcc76ea
 ```
 
-期望格式：**用箭头写清是发送还是接收、给谁/来自谁**，消息 ID 取前 8 位即可定位（完整 ID 可在 MCP 结果与收件箱查）：
+Expected format: **an arrow states send vs receive and the peer**; the
+first 8 characters of the message ID are enough to locate it (the full ID
+is available in the MCP result and the inbox):
 
 ```text
-发送（出站，queued 重试中）:
+Outbound (queued, retrying):
 [Agent Collab] → codex-01a08bdb@host-a queued f4cc7d17
 
-发送（出站，已送达）:
+Outbound (delivered):
 [Agent Collab] → codex-01a08bdb@host-a delivered f4cc7d17
 
-接收（入站，进入本会话收件箱）:
+Inbound (landed in this session's inbox):
 [Agent Collab] ← codex-01a08bc5@host-a queued 118cb7e5
 ```
 
-- 箭头 `→` = 本会话发出；`←` = 收到对端消息；
-- 对端用会话名（`codex-01a08bdb@host-a` 形式）；
-- 状态只保留 `queued` / `delivered` 两档。
+- Arrow `→` = sent by this session; `←` = received from a peer;
+- The peer appears as its session name (`codex-01a08bdb@host-a` form);
+- Status keeps only the two levels `queued` / `delivered`.
 
-> 已实现：入站 queue 通知首行、`send` 结果的出站初始行（`queued`）、发送方 sidecar 在对端取件归档后注入本会话的出站终态行（Claude 接收为 `delivered`，Codex 接收为 `queued`）均按本格式落地；终态行迟迟不来 = 对端未在收件。
+> Implemented as specified: the inbound queue notice first line, the
+> outbound initial line of the `send` result (`queued`), and the outbound
+> terminal-state line the sender's sidecar injects once the peer takes
+> delivery (delivered for a Claude receiver, queued for a Codex receiver)
+> all follow this format; a terminal line that never comes = the peer is
+> not receiving.
 
-房间消息的通知行在上述格式上追加房间短 ID 与对话名：
+Room-message notice lines append the room short id and the display name:
 
 ```text
-入站（房间消息排队通知）:
+Inbound (room message queued):
 [Agent Collab] ← glm-k7 #a7x9 queued 118cb7e5
 
-出站初始（send 工具结果）:
+Outbound initial (send tool result):
 [Agent Collab] → #a7x9 (2) queued f4cc7d17
 
-出站终态（发送方聚合，多成员带计数）:
+Outbound terminal (sender-side aggregate; counts when multiple members):
 [Agent Collab] → #a7x9 delivered 2 f4cc7d17
 ```

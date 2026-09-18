@@ -152,6 +152,10 @@ Each sidecar refreshes its own registration and polls the shared spool. The targ
 
 If the shared filesystem cannot provide those semantics, use a host-local state directory instead.
 
+## Deployment example: DISPATCH scheduler
+
+[`dispatch/`](dispatch/README.md) is an optional, self-contained deployment example — a resident scheduler agent that bridges a Feishu/Lark chat to the collaborating fleet (dispatching work, querying, reporting), kept alive by a small event-gateway daemon. It is not part of the agent-collab core and nothing in it is required to use the MCP tools; only code and a configuration template are tracked, while runtime data (chat events, ops logs, local credentials) stays git-ignored. See [`dispatch/README.md`](dispatch/README.md) for the architecture, the code-vs-runtime-data boundary, and configuration.
+
 ## MCP tools
 
 - `set_identity(role, name?)`
