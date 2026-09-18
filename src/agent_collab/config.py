@@ -3,8 +3,10 @@ from __future__ import annotations
 import os
 import secrets
 import stat
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+
+from .identity import IdentityError, parse_repo_short_names
 
 DEFAULT_ENV_FILE = Path.home() / ".config" / "agent-collab" / "config.env"
 DEFAULT_STATE_DIR = Path.home() / ".local" / "state" / "agent-collab"
@@ -12,6 +14,7 @@ ALLOWED_KEYS = {
     "AGENT_COLLAB_AUTH_KEY",
     "AGENT_COLLAB_STATE_DIR",
     "AGENT_COLLAB_GUIDE_PATH",
+    "AGENT_COLLAB_REPO_SHORT_NAMES",
     "FEISHU_WEBHOOK_URL",
 }
 
@@ -80,6 +83,7 @@ class Settings:
     poll_seconds: float = 1.0
     heartbeat_seconds: float = 5.0
     remote_stale_seconds: float = 30.0
+    repo_short_names: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def load(cls, env_file: Path = DEFAULT_ENV_FILE) -> Settings:
@@ -93,12 +97,19 @@ class Settings:
         guide_path = values.get("AGENT_COLLAB_GUIDE_PATH", "").strip()
         if len(guide_path) > 400 or any(ord(char) < 32 for char in guide_path):
             raise ConfigurationError("AGENT_COLLAB_GUIDE_PATH must be a short single-line path or URL")
+        try:
+            repo_short_names = parse_repo_short_names(
+                values.get("AGENT_COLLAB_REPO_SHORT_NAMES", "")
+            )
+        except IdentityError as exc:
+            raise ConfigurationError(str(exc)) from exc
         return cls(
             env_file=env_file,
             state_dir=state_dir,
             auth_key=raw_key.encode("utf-8"),
             feishu_webhook_url=values.get("FEISHU_WEBHOOK_URL"),
             guide_path=guide_path or None,
+            repo_short_names=repo_short_names,
         )
 
     def contains_secret(self, text: str) -> bool:

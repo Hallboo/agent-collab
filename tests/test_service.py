@@ -61,6 +61,22 @@ def alive_identity(name: str, session: str, pid: int) -> Identity:
     )
 
 
+def generated_identity(session: str, host: str = "test-host") -> Identity:
+    return Identity(
+        name="placeholder",
+        role="",
+        cwd="/tmp",
+        repo="task-factory",
+        host=host,
+        client="cc",
+        session_id=session,
+        pid=os.getpid(),
+        process_start=process_start(os.getpid()),
+        model="glm-5.3-highspeed[1m]",
+        name_generated=True,
+    )
+
+
 def wait_for(predicate, timeout: float = 5.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -321,17 +337,15 @@ def test_find_coagents_returns_table_and_marks_local_host(settings) -> None:
     remote.start()
     try:
         table = service.find_coagents()
-        assert "| Agent ID | Repo | Host Name | Client | Model | PID |" in table
+        assert "| Agent ID | Name | Repo | Host Name | Client | Model | PID |" in table
         assert (
-            f"| test_test_host_a_{os.getpid()} | test | host-a（本机·自己） | test | "
+            f"| test_test_host_a_{os.getpid()} | local | test | host-a（本机·自己） | test | "
             f"gpt-local | {os.getpid()} |"
         ) in table
         assert (
-            f"| test_test_host_b_{os.getpid()} | test | host-b | test | "
+            f"| test_test_host_b_{os.getpid()} | remote | test | host-b | test | "
             f"gpt-remote | {os.getpid()} |"
         ) in table
-        assert "| local |" not in table
-        assert "| remote |" not in table
         remote_table = remote.find_coagents()
         assert f"test_test_host_a_{os.getpid()}" in remote_table
         assert f"test_test_host_b_{os.getpid()}" in remote_table
@@ -343,6 +357,34 @@ def test_find_coagents_returns_table_and_marks_local_host(settings) -> None:
     finally:
         remote.stop()
         service.stop()
+
+
+def test_generated_name_takes_smallest_free_index(settings) -> None:
+    aliased = replace(settings, repo_short_names={"task-factory": "TF"})
+    first = CollaborationService(aliased, generated_identity("session-a"))
+    first.start()
+    second = CollaborationService(aliased, generated_identity("session-b"))
+    second.start()
+    try:
+        assert first.identity.name == "TF-GLM53-1"
+        assert second.identity.name == "TF-GLM53-2"
+    finally:
+        second.stop()
+        first.stop()
+    # both indices freed: the next session reuses the smallest one
+    third = CollaborationService(aliased, generated_identity("session-c"))
+    assert third.identity.name == "TF-GLM53-1"
+
+
+def test_generated_name_index_is_scoped_per_host(settings) -> None:
+    local = CollaborationService(settings, generated_identity("session-a", host="host-a"))
+    local.start()
+    try:
+        remote = CollaborationService(settings, generated_identity("session-b", host="host-b"))
+        assert local.identity.name == "task-factory-GLM53-1"
+        assert remote.identity.name == "task-factory-GLM53-1"
+    finally:
+        local.stop()
 
 
 def test_room_flow_create_join_send_leave(settings) -> None:

@@ -60,6 +60,10 @@ class CollaborationService:
         self.settings = settings
         self.identity = identity or detect_identity()
         self.store = FileStore(settings, local_host=self.identity.host)
+        if self.identity.name_generated:
+            # detect_identity cannot see the registry; assign the unique numeric
+            # suffix now that the store is available (smallest free index).
+            self.identity = self.identity.with_generated_name(self._generated_name())
         self.delivery = delivery or delivery_from_environment(self.identity)
         self.rate_limiter = MinuteRateLimiter(settings.send_limit_per_minute)
         self._stop = threading.Event()
@@ -76,6 +80,19 @@ class CollaborationService:
         self._thread = threading.Thread(target=self._watch, name="agent-collab-inbox", daemon=True)
         self._thread.start()
 
+    def _generated_name(self) -> str:
+        base = _default_name(
+            self.identity.client,
+            self.identity.model,
+            self.identity.repo,
+            self.settings.repo_short_names,
+        )
+        used = self.store.used_name_suffixes(base, self.identity.host)
+        index = 1
+        while index in used:
+            index += 1
+        return f"{base}-{index}"
+
     def _register_with_name_retry(self) -> None:
         for attempt in range(NAME_COLLISION_RETRIES):
             try:
@@ -84,10 +101,8 @@ class CollaborationService:
             except StoreError:
                 if attempt == NAME_COLLISION_RETRIES - 1 or not self.identity.name_generated:
                     raise
-                self.identity = self.identity.with_identity(
-                    role=self.identity.role,
-                    name=_default_name(self.identity.client, self.identity.model),
-                )
+                # re-scan the registry: the colliding registration is visible now
+                self.identity = self.identity.with_generated_name(self._generated_name())
 
     def stop(self) -> None:
         self._stop.set()
@@ -266,8 +281,8 @@ class CollaborationService:
             )
         )
         lines = [
-            "| Agent ID | Repo | Host Name | Client | Model | PID |",
-            "| --- | --- | --- | --- | --- | ---: |",
+            "| Agent ID | Name | Repo | Host Name | Client | Model | PID |",
+            "| --- | --- | --- | --- | --- | --- | ---: |",
         ]
         for agent in agents:
             full_host = str(agent["host"])
@@ -282,6 +297,7 @@ class CollaborationService:
             )
             cells = (
                 agent["agent_id"],
+                agent["name"],
                 agent["repo"],
                 host,
                 client,

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import re
-import secrets
 import socket
 import subprocess
 import tomllib
@@ -11,7 +10,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 SAFE_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,160}$")
-NAME_SUFFIX_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ"
+NAME_REPO_MAX_CHARS = 24
 CODEX_ROLLOUT = re.compile(
     r"^rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$"
 )
@@ -116,10 +115,52 @@ def _model_abbrev(model: str) -> str:
     return (f"{name}{version_digits}")[:12]
 
 
-def _default_name(client: str, model: str) -> str:
+def parse_repo_short_names(raw: str) -> dict[str, str]:
+    """Parse `repo=alias` comma pairs; raise IdentityError on malformed entries."""
+    mapping: dict[str, str] = {}
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        repo, separator, alias = item.partition("=")
+        repo = repo.strip()
+        alias = alias.strip()
+        if not separator or not repo or not alias:
+            raise IdentityError(f"invalid repo short-name entry: {item}")
+        if len(alias) > 16 or not re.fullmatch(r"[A-Za-z0-9_-]+", alias):
+            raise IdentityError(f"repo short name must be 1-16 characters of [A-Za-z0-9_-]: {alias}")
+        mapping[repo] = alias
+    return mapping
+
+
+def _repo_abbrev(repo: str, short_names: Mapping[str, str] | None = None) -> str:
+    alias = (short_names or {}).get(repo)
+    if alias:
+        return alias
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", repo.strip()).strip("-").lower()
+    return (slug or "repo")[:NAME_REPO_MAX_CHARS]
+
+
+def _repo_short_names_from_env(env: Mapping[str, str]) -> dict[str, str]:
+    try:
+        return parse_repo_short_names(env.get("AGENT_COLLAB_REPO_SHORT_NAMES", ""))
+    except IdentityError:
+        return {}
+
+
+def _default_name(
+    client: str,
+    model: str,
+    repo: str,
+    short_names: Mapping[str, str] | None = None,
+) -> str:
+    """Base of an auto-generated display name: <repo-short-name>-<MODEL>.
+
+    The numeric suffix that makes the name unique is appended at registration
+    time, when the store can see which indices online peers already hold.
+    """
     abbrev = _model_abbrev(model) or ("cc" if client == "cc" else client)
-    suffix = secrets.choice(NAME_SUFFIX_ALPHABET)
-    return f"{abbrev.upper()}-{suffix}"
+    return f"{_repo_abbrev(repo, short_names)}-{abbrev.upper()}"
 
 
 def _clean_name(value: str) -> str:
@@ -226,6 +267,10 @@ class Identity:
             name_generated=False if name is not None else self.name_generated,
         )
 
+    def with_generated_name(self, name: str) -> Identity:
+        """Reassign an auto-generated name, keeping the generated marker for collision retries."""
+        return replace(self, name=_clean_name(name), name_generated=True)
+
 
 def detect_identity(host_name: str | None = None) -> Identity:
     env = os.environ
@@ -256,7 +301,10 @@ def detect_identity(host_name: str | None = None) -> Identity:
         raise IdentityError("host name contains unsupported characters")
     model = _detect_model(client, pid, env)
     explicit_name = env.get("AGENT_COLLAB_NAME", "")
-    name = _clean_name(explicit_name or _default_name(client, model))
+    name = _clean_name(
+        explicit_name
+        or _default_name(client, model, repo_name, _repo_short_names_from_env(env))
+    )
     role = _clean_role(env.get("AGENT_COLLAB_ROLE", ""))
     return Identity(
         name=name,

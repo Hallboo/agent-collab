@@ -218,6 +218,18 @@ class FileStore:
         except (KeyError, TypeError, ValueError, OverflowError):
             return False
 
+    def used_name_suffixes(self, base: str, host: str) -> set[int]:
+        """Numeric indices held by online same-host names of the form <base>-<n>."""
+        pattern = re.compile(rf"^{re.escape(base)}-(\d+)$")
+        used: set[int] = set()
+        for payload in self._iter_agent_payloads():
+            if payload["host"] != host or not self._is_online(payload):
+                continue
+            match = pattern.fullmatch(str(payload["name"]))
+            if match:
+                used.add(int(match.group(1)))
+        return used
+
     def list_agents(self) -> list[dict[str, Any]]:
         agents: list[dict[str, Any]] = []
         for payload in self._iter_agent_payloads():

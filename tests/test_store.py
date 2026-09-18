@@ -41,6 +41,16 @@ def alive_identity(name: str, session: str, pid: int) -> Identity:
     )
 
 
+def test_used_name_suffixes_counts_online_same_host_only(settings) -> None:
+    store = FileStore(settings, local_host="test-host")
+    store.prepare()
+    store.register(identity("tf-GPT5-2", "session-a"))
+    store.register(identity("tf-GPT5-7", "session-b"))
+    store.register(identity("tf-GPT5-3", "session-c", host="other-host"))
+    store.register(identity("unrelated-1", "session-d"))
+    assert store.used_name_suffixes("tf-GPT5", "test-host") == {2, 7}
+
+
 def test_registration_send_and_archive(settings) -> None:
     store = FileStore(settings, local_host="test-host")
     store.prepare()

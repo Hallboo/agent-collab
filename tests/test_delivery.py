@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import socket
 import subprocess
 import threading
@@ -271,11 +270,14 @@ def test_detects_declared_model_without_guessing() -> None:
     )
 
 
-def test_default_name_uses_model_abbreviation() -> None:
-    suffix = r"-[A-Z]"
-    assert re.fullmatch(r"GLM53" + suffix, _default_name("codex", "glm-5.3-highspeed[1m]"))
-    assert re.fullmatch(r"GLM5" + suffix, _default_name("codex", "glm-5"))
-    assert re.fullmatch(r"OPUS5" + suffix, _default_name("cc", "claude-opus-5[1m]"))
-    assert re.fullmatch(r"HAIKU45" + suffix, _default_name("cc", "claude-haiku-4.5-20251001"))
-    assert re.fullmatch(r"GPT56" + suffix, _default_name("cc", "gpt-5.6"))
-    assert re.fullmatch(r"CODEX" + suffix, _default_name("codex", ""))
+def test_default_name_uses_repo_and_model_abbreviation() -> None:
+    assert _default_name("codex", "glm-5.3-highspeed[1m]", "agent-collab") == "agent-collab-GLM53"
+    assert _default_name("cc", "claude-opus-5[1m]", "task_factory") == "task-factory-OPUS5"
+    assert _default_name("cc", "claude-haiku-4.5-20251001", "agent-collab") == "agent-collab-HAIKU45"
+    assert _default_name("cc", "gpt-5.6", "agent-collab") == "agent-collab-GPT56"
+    assert _default_name("codex", "", "agent-collab") == "agent-collab-CODEX"
+    assert (
+        _default_name("codex", "glm-5.3-highspeed[1m]", "task-factory", {"task-factory": "TF"})
+        == "TF-GLM53"
+    )
+    assert _default_name("cc", "glm-5", "a" * 40) == f"{'a' * 24}-GLM5"
