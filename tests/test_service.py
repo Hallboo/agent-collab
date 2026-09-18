@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import time
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from agent_collab.auth import seal
 from agent_collab.delivery import DeliveryResult
 from agent_collab.identity import Identity, process_start
 from agent_collab.service import CollaborationService
@@ -385,6 +388,71 @@ def test_generated_name_index_is_scoped_per_host(settings) -> None:
         assert remote.identity.name == "task-factory-GLM53-1"
     finally:
         local.stop()
+
+
+def test_find_coagents_sweeps_stale_empty_room_and_keeps_transcript(settings) -> None:
+    owner = CollaborationService(
+        settings, identity("owner", "session-a", host="owner-host"), RecordingDelivery()
+    )
+    observer = CollaborationService(settings, identity("observer", "session-b"), RecordingDelivery())
+    owner.start()
+    observer.start()
+    created = owner.create_room()
+    room_id = str(created["room_id"])
+    long_id = str(created["long_id"])
+    try:
+        assert f"| #{room_id} " in observer.find_coagents()
+        owner.stop()  # last member gone; the sweep only stamps the grace clock
+        assert f"| #{room_id} " in observer.find_coagents()
+        members_path = observer.store._room_members_path(long_id)
+        payload = observer.store._read_payload(members_path)
+        assert payload["empty_since"]
+        payload["empty_since"] = (datetime.now(UTC) - timedelta(hours=3)).isoformat()
+        with observer.store._lock():
+            observer.store._write_json_atomic(members_path, seal(payload, settings.auth_key), overwrite=True)
+        table = observer.find_coagents()
+        assert f"| #{room_id} " not in table
+        assert "已自动清理空房" in table and f"#{room_id}" in table
+        assert not members_path.exists()
+        archived = observer.store.archive_dir / "rooms" / f"{long_id}.jsonl"
+        assert archived.exists()
+        assert '"closed"' in archived.read_text(encoding="utf-8")
+        with pytest.raises(StoreError):
+            observer.join_room(room_id)
+    finally:
+        owner.stop()
+        observer.stop()
+
+
+def test_empty_room_grace_keeps_room_and_rejoin_clears_stamp(settings) -> None:
+    owner = CollaborationService(
+        settings, identity("owner", "session-a", host="owner-host"), RecordingDelivery()
+    )
+    observer = CollaborationService(settings, identity("observer", "session-b"), RecordingDelivery())
+    owner.start()
+    observer.start()
+    created = owner.create_room()
+    room_id = str(created["room_id"])
+    long_id = str(created["long_id"])
+    joiner = None
+    try:
+        owner.stop()
+        observer.find_coagents()  # stamps empty_since, room stays listed and rejoinable
+        members_path = observer.store._room_members_path(long_id)
+        assert observer.store._read_payload(members_path).get("empty_since")
+        joiner = CollaborationService(
+            settings, identity("joiner", "session-c", host="joiner-host"), RecordingDelivery()
+        )
+        joiner.start()
+        joined = joiner.join_room(room_id)
+        assert str(joined["room_id"]) == room_id
+        assert "empty_since" not in observer.store._read_payload(members_path)
+        assert f"| #{room_id} " in observer.find_coagents()
+    finally:
+        owner.stop()
+        observer.stop()
+        if joiner is not None:
+            joiner.stop()
 
 
 def test_room_flow_create_join_send_leave(settings) -> None:

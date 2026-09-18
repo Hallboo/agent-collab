@@ -273,6 +273,7 @@ class CollaborationService:
         }
 
     def find_coagents(self) -> str:
+        removed = self.store.gc_rooms()
         agents = self.store.list_agents()
         agents.sort(
             key=lambda item: (
@@ -319,6 +320,13 @@ class CollaborationService:
                 lines.append(
                     f'| #{room["room_id"]} | {escaped_members} | {str(room["created"])[:16]} |'
                 )
+        if removed:
+            lines.append("")
+            lines.append(
+                "已自动清理空房(连续2小时无在线成员): "
+                + "、".join(f"#{item['room_id']}" for item in removed)
+                + "。对话记录保留于 archive/rooms/,该房号不可再用。"
+            )
         return "\n".join(lines)
 
     def send(self, to: str, title: str, text: str, reply_to: str | None = None) -> dict[str, Any]:

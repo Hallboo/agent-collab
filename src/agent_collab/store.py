@@ -23,6 +23,7 @@ from .identity import Identity, process_is_alive
 ROOM_ALPHABET = "23456789abcdefghjkmnpqrstuvwxyz"
 ROOM_LONG_ID_LENGTH = 16
 ROOM_SHORT_ID_LENGTH = 4
+ROOM_EMPTY_TTL = timedelta(hours=2)
 
 
 def utc_now() -> str:
@@ -438,6 +439,24 @@ class FileStore:
                 return payload
         return None
 
+    def _append_room_line(self, long_id: str, payload: dict[str, Any]) -> None:
+        line = (
+            json.dumps(seal(payload, self.settings.auth_key), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            + "\n"
+        ).encode("utf-8")
+        path = self._room_log_path(long_id)
+        self._secure_directory(path.parent)
+        with self._lock():
+            if not self._room_members_path(long_id).exists():
+                return  # the room was swept; do not resurrect its log
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            try:
+                os.write(descriptor, line)
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        self._require_secure_file(path)
+
     def room_append_event(
         self,
         long_id: str,
@@ -459,20 +478,67 @@ class FileStore:
         }
         if msg_id:
             payload["msg_id"] = msg_id
-        line = (
-            json.dumps(seal(payload, self.settings.auth_key), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-            + "\n"
-        ).encode("utf-8")
-        path = self._room_log_path(long_id)
-        self._secure_directory(path.parent)
-        with self._lock():
-            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        self._append_room_line(long_id, payload)
+
+    def gc_rooms(self, empty_ttl: timedelta = ROOM_EMPTY_TTL) -> list[dict[str, Any]]:
+        """Sweep rooms whose online membership has been empty beyond empty_ttl.
+
+        The first observation of emptiness stamps `empty_since` and keeps the
+        room listed and rejoinable; once the stamp exceeds the ttl the members
+        file is removed and the sealed transcript is moved — never deleted — to
+        archive/rooms/ with a final `closed` event.
+        """
+        removed: list[dict[str, Any]] = []
+        now = datetime.now(UTC)
+        for long_id, payload in list(self._iter_room_records()):
+            if any(self.online_member(str(member["agent_id"])) is not None for member in payload["members"]):
+                continue
+            empty_since = str(payload.get("empty_since") or "")
+            if not empty_since:
+                stamped = {**payload, "members": [], "empty_since": utc_now()}
+                with self._lock():
+                    self._write_json_atomic(
+                        self._room_members_path(long_id),
+                        seal(stamped, self.settings.auth_key),
+                        overwrite=True,
+                    )
+                continue
             try:
-                os.write(descriptor, line)
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
-        self._require_secure_file(path)
+                since = datetime.fromisoformat(empty_since)
+            except ValueError:
+                continue
+            if since.tzinfo is None or now - since.astimezone(UTC) < empty_ttl:
+                continue
+            self._append_room_line(
+                long_id,
+                {
+                    "kind": "closed",
+                    "room": str(payload["room_id"]),
+                    "from": "system@agent-collab",
+                    "from_name": "agent-collab",
+                    "title": "房间清理",
+                    "text": (
+                        f"room closed automatically: no online members since {empty_since} "
+                        f"(ttl {int(empty_ttl.total_seconds())}s); transcript kept"
+                    ),
+                    "time": utc_now(),
+                },
+            )
+            with self._lock():
+                members_path = self._room_members_path(long_id)
+                if not members_path.exists():
+                    continue  # swept concurrently; nothing left to do
+                rooms_archive = self.archive_dir / "rooms"
+                self._secure_directory(rooms_archive)
+                log_path = self._room_log_path(long_id)
+                if log_path.exists():
+                    os.replace(log_path, rooms_archive / log_path.name)
+                    self._fsync_directory(rooms_archive)
+                    self._fsync_directory(log_path.parent)
+                members_path.unlink()
+                self._fsync_directory(members_path.parent)
+            removed.append({"room_id": str(payload["room_id"]), "long_id": long_id})
+        return removed
 
     def room_create(self, creator: Identity) -> dict[str, Any]:
         existing_shorts = {str(payload["room_id"]) for _, payload in self._iter_room_records()}
@@ -531,7 +597,10 @@ class FileStore:
             if str(payload["room_id"]) == normalized
         ]
         if not matches:
-            raise StoreError(f"room not found: #{normalized} — see the rooms table in find_coagents()")
+            raise StoreError(
+                f"room not found: #{normalized} — see the rooms table in find_coagents(); "
+                "an empty room is swept automatically once it has had no online members for 2 hours"
+            )
         if len(matches) > 1:
             raise StoreError(f"room id is ambiguous: {normalized}")
         return matches[0]
@@ -566,6 +635,7 @@ class FileStore:
                 },
             ],
         }
+        payload.pop("empty_since", None)  # a live member again — restart the grace clock
         with self._lock():
             self._write_json_atomic(
                 self._room_members_path(long_id),
