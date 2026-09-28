@@ -61,6 +61,42 @@ def test_configure_mcp_adds_both_clients(tmp_path: Path) -> None:
     assert (tmp_path / "claude-skills" / "find-coagent").resolve() == skill_source
 
 
+def test_configure_mcp_writes_local_host_file_without_baking_label(
+    tmp_path: Path,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _fake_client(fake_bin, "codex")
+    _fake_client(fake_bin, "claude")
+    env_file = tmp_path / "config.env"
+    env_file.write_text("placeholder\n", encoding="utf-8")
+    call_log = tmp_path / "calls.log"
+    host_file = tmp_path / "etc" / "agent-collab" / "host-name"
+    script = Path(__file__).resolve().parents[1] / "bin" / "configure-mcp"
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "CALL_LOG": str(call_log),
+        "AGENT_COLLAB_HOST_FILE": str(host_file),
+        "COAGENT_CODEX_SKILLS_DIR": str(tmp_path / "codex-skills"),
+        "COAGENT_CLAUDE_SKILLS_DIR": str(tmp_path / "claude-skills"),
+    }
+
+    result = subprocess.run(
+        [str(script), "--host-name", "dev-box", str(env_file)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert host_file.read_text(encoding="utf-8") == "dev-box\n"
+    assert "Wrote machine-local host label" in result.stdout
+    calls = call_log.read_text(encoding="utf-8")
+    assert f"serve --env-file {env_file}" in calls
+    assert "--host-name" not in calls
+
+
 def test_configure_mcp_replaces_existing_entries(tmp_path: Path) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()

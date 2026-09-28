@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 SAFE_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,160}$")
+DEFAULT_HOST_FILE = Path("/etc/agent-collab/host-name")
 NAME_REPO_MAX_CHARS = 24
 CODEX_ROLLOUT = re.compile(
     r"^rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$"
@@ -272,6 +273,21 @@ class Identity:
         return replace(self, name=_clean_name(name), name_generated=True)
 
 
+def _host_from_local_file(env: Mapping[str, str]) -> str:
+    """Read a machine-local host alias; empty when absent or malformed.
+
+    The default path lives on the machine's own filesystem, so the alias does
+    not travel with a client config directory or env file shared across hosts,
+    and it reaches every sidecar no matter how the client was spawned.
+    """
+    path = Path(env.get("AGENT_COLLAB_HOST_FILE") or DEFAULT_HOST_FILE)
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    return value if SAFE_ID.fullmatch(value) else ""
+
+
 def detect_identity(host_name: str | None = None) -> Identity:
     env = os.environ
     if env.get("CLAUDE_CODE_SESSION_ID"):
@@ -296,7 +312,12 @@ def detect_identity(host_name: str | None = None) -> Identity:
         raise IdentityError("client session ID contains unsupported characters")
     cwd = Path(env.get("AGENT_COLLAB_CWD", os.getcwd()))
     repo_root, repo_name = _repo_for(cwd)
-    host = (host_name or env.get("AGENT_COLLAB_HOST") or socket.gethostname()).strip()
+    host = (
+        host_name
+        or env.get("AGENT_COLLAB_HOST")
+        or _host_from_local_file(env)
+        or socket.gethostname()
+    ).strip()
     if not SAFE_ID.fullmatch(host):
         raise IdentityError("host name contains unsupported characters")
     model = _detect_model(client, pid, env)

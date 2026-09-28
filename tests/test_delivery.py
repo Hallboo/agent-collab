@@ -262,6 +262,41 @@ def test_detects_codex_identity_from_parent_when_env_is_missing(
     assert detect_identity(host_name="dev-box").host == "dev-box"
 
 
+def test_host_label_resolves_arg_over_env_over_local_file_over_hostname(
+    monkeypatch, tmp_path: Path
+) -> None:
+    for key in (
+        "CODEX_THREAD_ID",
+        "CODEX_SESSION_ID",
+        "CLAUDE_CODE_SESSION_ID",
+        "AGENT_COLLAB_CLIENT",
+        "AGENT_COLLAB_SESSION_ID",
+        "AGENT_COLLAB_HOST",
+        "AGENT_COLLAB_HOST_FILE",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("AGENT_COLLAB_CWD", str(tmp_path))
+    monkeypatch.setattr(
+        "agent_collab.identity._codex_identity_from_parent",
+        lambda: ("01234567-89ab-cdef-0123-456789abcdef", os.getpid()),
+    )
+    host_file = tmp_path / "host-name"
+    monkeypatch.setenv("AGENT_COLLAB_HOST_FILE", str(host_file))
+    monkeypatch.setattr(
+        "agent_collab.identity.socket.gethostname", lambda: "raw-hostname"
+    )
+
+    assert detect_identity().host == "raw-hostname"
+    host_file.write_text("file-box\n", encoding="utf-8")
+    assert detect_identity().host == "file-box"
+    monkeypatch.setenv("AGENT_COLLAB_HOST", "env-box")
+    assert detect_identity().host == "env-box"
+    assert detect_identity(host_name="arg-box").host == "arg-box"
+    monkeypatch.delenv("AGENT_COLLAB_HOST")
+    host_file.write_text("not a valid host!", encoding="utf-8")
+    assert detect_identity().host == "raw-hostname"
+
+
 def test_detects_declared_model_without_guessing() -> None:
     assert _detect_model("cc", os.getpid(), {"ANTHROPIC_MODEL": "claude-opus"}) == "claude-opus"
     assert (

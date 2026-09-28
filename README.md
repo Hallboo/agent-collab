@@ -52,7 +52,7 @@ The MCP launcher accepts any explicit configuration path:
 ./bin/configure-mcp /secure/path/agent-collab.env
 ```
 
-This replaces the exact `agent-collab` MCP entry for both installed clients, installs the `find-coagent` skill without overwriting an existing skill, and skips a missing client. The stored launcher command contains no host name: each sidecar resolves its Host label per machine when it starts, as `AGENT_COLLAB_HOST` env > machine hostname (`src/agent_collab/identity.py::detect_identity`). A client config directory can therefore be shared across machines without carrying one machine's label onto another. To configure either client manually:
+This replaces the exact `agent-collab` MCP entry for both installed clients, installs the `find-coagent` skill without overwriting an existing skill, and skips a missing client. The stored launcher command contains no host name: each sidecar resolves its Host label per machine when it starts, as `AGENT_COLLAB_HOST` env > machine-local `/etc/agent-collab/host-name` > machine hostname (`src/agent_collab/identity.py::detect_identity`). A client config directory can therefore be shared across machines without carrying one machine's label onto another. Pass `--host-name LABEL` to write that machine-local alias file (path override: `AGENT_COLLAB_HOST_FILE`) so every sidecar on the machine enrolls under one stable, human-readable label even when the raw hostname is opaque. To configure either client manually:
 
 ```bash
 codex mcp add agent-collab -- \
@@ -77,11 +77,22 @@ agent-collab doctor --env-file /secure/path/agent-collab.env
 ### Host-label pitfalls
 
 The enrolled host label is resolved when each sidecar starts, as an explicit
-`--host-name` launcher argument > `AGENT_COLLAB_HOST` env > machine hostname
+`--host-name` launcher argument > `AGENT_COLLAB_HOST` env > machine-local
+`/etc/agent-collab/host-name` alias file > machine hostname
 (`src/agent_collab/identity.py::detect_identity`). `configure-mcp` passes no
 `--host-name`, so the label always comes from the machine actually running the
 session. Fixed issues and operational facts, newest first:
 
+- **An opaque raw hostname split one machine into two labels (fixed 2026-09-28).**
+  A machine whose hostname is e.g. `develop-20301126-x7k2q9` enrolled
+  codex sessions under the shortened `x7k2q9`, while a hand-added `--host-name`
+  on the machine-local Claude config showed a friendly alias — the same
+  machine appeared as two hosts. The `AGENT_COLLAB_HOST` channel depends on
+  environment inheritance and is easily missed by long-lived spawners. The
+  machine-local alias file `/etc/agent-collab/host-name` (path override:
+  `AGENT_COLLAB_HOST_FILE`), written by `configure-mcp --host-name LABEL`, now
+  sits between the env var and the hostname, so every client on the machine
+  shares one label without anything shared carrying it.
 - **Config reuse across machines mislabels the host (fixed 2026-09-12).**
   Earlier versions stored a fixed `--host-name` launcher argument detected at
   configuration time. If a client config directory was shared with or migrated

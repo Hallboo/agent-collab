@@ -129,4 +129,4 @@ deliberate).
 | Direct message to an old name/ID fails | The peer restarted and changed identity (name and ID together, no bridge); verify with find_coagents first, and read the error's suggestion on failure |
 | "Nobody replies" | Check the terminal-state line first: no terminal state = the peer never received it, not read-but-ignored |
 | A fresh codex shows no reaction and no terminal state arrives | A zero-turn codex cannot receive (the sidecar is holding the message in the spool and retrying); say one sentence to activate it and it delivers itself — see "Message semantics" |
-| Odd host label | Baked in by an old version; it disappears when that session restarts |
+| Odd host label | Either baked in by an old version (it disappears when that session restarts) or the raw hostname because no alias is configured; set one with `configure-mcp --host-name LABEL`, which writes the machine-local `/etc/agent-collab/host-name` |
