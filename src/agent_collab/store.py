@@ -94,18 +94,19 @@ class FileStore:
     def _secure_directory(path: Path) -> None:
         path.mkdir(parents=True, exist_ok=True, mode=0o700)
         info = path.lstat()
-        if path.is_symlink() or not stat.S_ISDIR(info.st_mode):
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
             raise ConfigurationError(f"state path is not a real directory: {path}")
         if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
             raise ConfigurationError(f"state directory must be owned by current user with mode 0700: {path}")
 
     @staticmethod
-    def _require_secure_file(path: Path) -> None:
+    def _require_secure_file(path: Path) -> os.stat_result:
         info = path.lstat()
-        if path.is_symlink() or not stat.S_ISREG(info.st_mode):
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
             raise ConfigurationError(f"state file is not a regular file: {path}")
         if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600:
             raise ConfigurationError(f"state file must be owned by current user with mode 0600: {path}")
+        return info
 
     @contextmanager
     def _lock(self) -> Iterator[None]:
@@ -144,8 +145,8 @@ class FileStore:
             os.close(descriptor)
 
     def _read_payload(self, path: Path) -> dict[str, Any]:
-        self._require_secure_file(path)
-        if path.stat().st_size > 128 * 1024:
+        info = self._require_secure_file(path)
+        if info.st_size > 128 * 1024:
             raise AuthenticationError("state document is too large")
         try:
             document = json.loads(path.read_text(encoding="utf-8"))
@@ -428,16 +429,24 @@ class FileStore:
             if isinstance(payload.get("room_id"), str) and isinstance(payload.get("members"), list):
                 yield path.name[: -len(".members.json")], payload
 
-    def online_member(self, agent_id_value: str) -> dict[str, Any] | None:
+    def _online_agents_by_id(self) -> dict[str, dict[str, Any]]:
+        """One registry scan: online payloads keyed by Agent ID.
+
+        Room fan-out and pruning resolve every member against a single
+        snapshot instead of re-scanning the whole registry per member
+        (O(members x agents) sealed reads on a network filesystem).
+        """
+        online: dict[str, dict[str, Any]] = {}
         for payload in self._iter_agent_payloads():
             if not self._is_online(payload):
                 continue
-            if (
+            online[
                 agent_id(str(payload["repo"]), str(payload["client"]), str(payload["host"]), int(payload["pid"]))
-                == agent_id_value
-            ):
-                return payload
-        return None
+            ] = payload
+        return online
+
+    def online_member(self, agent_id_value: str) -> dict[str, Any] | None:
+        return self._online_agents_by_id().get(agent_id_value)
 
     def _append_room_line(self, long_id: str, payload: dict[str, Any]) -> None:
         line = (
@@ -490,8 +499,9 @@ class FileStore:
         """
         removed: list[dict[str, Any]] = []
         now = datetime.now(UTC)
+        online = self._online_agents_by_id()
         for long_id, payload in list(self._iter_room_records()):
-            if any(self.online_member(str(member["agent_id"])) is not None for member in payload["members"]):
+            if any(str(member["agent_id"]) in online for member in payload["members"]):
                 continue
             empty_since = str(payload.get("empty_since") or "")
             if not empty_since:
@@ -605,8 +615,15 @@ class FileStore:
             raise StoreError(f"room id is ambiguous: {normalized}")
         return matches[0]
 
-    def room_prune(self, long_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        kept = [member for member in payload["members"] if self.online_member(str(member["agent_id"])) is not None]
+    def room_prune(
+        self,
+        long_id: str,
+        payload: dict[str, Any],
+        *,
+        online: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        online = self._online_agents_by_id() if online is None else online
+        kept = [member for member in payload["members"] if str(member["agent_id"]) in online]
         if len(kept) != len(payload["members"]):
             payload = {**payload, "members": kept}
             with self._lock():
@@ -678,7 +695,8 @@ class FileStore:
         reply_to: str | None,
     ) -> dict[str, Any]:
         long_id, payload = self.room_resolve(room_id)
-        payload = self.room_prune(long_id, payload)
+        online = self._online_agents_by_id()
+        payload = self.room_prune(long_id, payload, online=online)
         sender_agent_id = agent_id(sender.repo, sender.client, sender.host, sender.pid)
         if not any(str(member["agent_id"]) == sender_agent_id for member in payload["members"]):
             raise StoreError(f"not a member of room {payload['room_id']}")
@@ -688,12 +706,12 @@ class FileStore:
         for member in payload["members"]:
             if str(member["agent_id"]) == sender_agent_id:
                 continue
-            online = self.online_member(str(member["agent_id"]))
-            if online is None:
+            recipient = online.get(str(member["agent_id"]))
+            if recipient is None:
                 continue
             self._deliver_single(
                 sender,
-                online,
+                recipient,
                 msg_id,
                 title,
                 text,
@@ -702,8 +720,8 @@ class FileStore:
             )
             recipients.append(
                 {
-                    "address": f"{online['name']}@{online['host']}",
-                    "key": agent_key(str(online["host"]), str(online["session_id"])),
+                    "address": f"{recipient['name']}@{recipient['host']}",
+                    "key": agent_key(str(recipient["host"]), str(recipient["session_id"])),
                     "agent_id": str(member["agent_id"]),
                 }
             )
